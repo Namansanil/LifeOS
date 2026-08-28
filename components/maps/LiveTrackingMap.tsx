@@ -1,2 +1,2 @@
-export * from './LiveTrackingMap.native';
-export { default } from './LiveTrackingMap.native';
+export * from './LiveTrackingMap.web';
+export { default } from './LiveTrackingMap.web';

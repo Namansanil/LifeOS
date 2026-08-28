@@ -11,6 +11,7 @@ import {
   UserProfile,
   Workout,
 } from '@/types';
+import { generateUUID } from './uuid';
 
 export const SEED_USER_ID = 'demo-user-naman';
 
@@ -111,7 +112,7 @@ export async function populateSeedData(userId = SEED_USER_ID): Promise<void> {
   // 2. Top 3 Priorities
   const priorities: DailyPriority[] = [
     {
-      id: 'p_1',
+      id: generateUUID(),
       user_id: userId,
       date: today,
       order_index: 1,
@@ -121,7 +122,7 @@ export async function populateSeedData(userId = SEED_USER_ID): Promise<void> {
       category: 'LEARN',
     },
     {
-      id: 'p_2',
+      id: generateUUID(),
       user_id: userId,
       date: today,
       order_index: 2,
@@ -131,7 +132,7 @@ export async function populateSeedData(userId = SEED_USER_ID): Promise<void> {
       category: 'MOVE',
     },
     {
-      id: 'p_3',
+      id: generateUUID(),
       user_id: userId,
       date: today,
       order_index: 3,
