@@ -14,6 +14,8 @@ export type ActivitySource = 'MANUAL' | 'GPS' | 'HEALTH' | 'IMPORTED';
 
 export type ActivityVisibility = 'PRIVATE' | 'FRIENDS' | 'PUBLIC';
 
+export type GPSQuality = 'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR' | 'LOST';
+
 export interface UserProfile {
   id: string;
   email: string;
@@ -37,6 +39,16 @@ export interface UserProfile {
   };
 }
 
+export interface RawGPSPoint {
+  latitude: number;
+  longitude: number;
+  altitude?: number | null;
+  accuracy?: number | null;
+  speed?: number | null;
+  heading?: number | null;
+  timestamp: number;
+}
+
 export interface RoutePoint {
   id?: string;
   activity_id?: string;
@@ -48,6 +60,17 @@ export interface RoutePoint {
   speed?: number | null;
 }
 
+export interface ActivitySplit {
+  splitNumber: number;
+  distanceMeters: number;
+  durationSeconds: number;
+  movingSeconds: number;
+  paceSecKm: number;
+  speedKmh: number;
+  elevationGainMeters: number;
+  elevationLossMeters: number;
+}
+
 export interface Activity {
   id: string;
   user_id: string;
@@ -56,18 +79,24 @@ export interface Activity {
   title: string;
   started_at: string;
   ended_at?: string;
-  duration: number; // in seconds
-  distance: number; // in meters
+  duration: number; // in seconds (elapsed)
+  distance: number; // in meters (authoritative post-processed)
   moving_time: number; // in seconds
   elevation_gain: number; // in meters
+  elevation_loss?: number; // in meters
   average_speed: number; // in m/s
+  max_speed?: number; // in m/s
   average_pace: number; // in sec/km
+  best_pace?: number; // in sec/km
   calories?: number;
   source: ActivitySource;
   visibility: ActivityVisibility;
   notes?: string;
   rating?: number; // 1-5
+  gps_quality?: GPSQuality;
+  splits?: ActivitySplit[];
   route?: RoutePoint[];
+  raw_route?: RawGPSPoint[];
   created_at: string;
   updated_at: string;
 }
@@ -146,6 +175,7 @@ export interface SurfSession {
   updated_at: string;
 }
 
+// Generalized Learning Domain (Academic subjects, online courses, certifications, self-study)
 export interface Subject {
   id: string;
   user_id: string;
@@ -162,7 +192,7 @@ export interface CollegeTask {
   user_id: string;
   subject_id: string;
   title: string;
-  type: 'ASSIGNMENT' | 'EXAM' | 'READING' | 'PROJECT' | 'OTHER';
+  type: 'ASSIGNMENT' | 'EXAM' | 'READING' | 'PROJECT' | 'CERTIFICATION' | 'OTHER';
   due_date: string;
   completed: boolean;
   completed_at?: string;
@@ -210,6 +240,33 @@ export interface Project {
   updated_at: string;
 }
 
+// First-Class Goals Domain
+export interface GoalMilestone {
+  id: string;
+  goal_id: string;
+  title: string;
+  target_date?: string;
+  completed: boolean;
+  completed_at?: string;
+  order_index: number;
+}
+
+export interface Goal {
+  id: string;
+  user_id: string;
+  title: string;
+  description?: string;
+  pillar: LifePillar;
+  target_date?: string;
+  status: 'ACTIVE' | 'ACHIEVED' | 'PAUSED' | 'ARCHIVED';
+  milestones: GoalMilestone[];
+  progress_percentage: number; // 0-100 derived from milestones
+  linked_project_ids?: string[];
+  linked_habit_ids?: string[];
+  created_at: string;
+  updated_at: string;
+}
+
 export interface DailyPriority {
   id: string;
   user_id: string;
@@ -219,15 +276,16 @@ export interface DailyPriority {
   completed: boolean;
   completed_at?: string;
   category?: LifePillar;
+  goal_id?: string;
 }
 
 export interface DailyLog {
   id: string;
   user_id: string;
   date: string; // YYYY-MM-DD
-  life_score: number; // 0 - 100
-  readiness_score: number; // 0 - 100
-  readiness_label: string; // "RECOVERED", "OPTIMAL", "MODERATE", "FATIGUED"
+  life_score: number | null; // null if insufficient data
+  readiness_score: number | null; // null if insufficient data
+  readiness_label: string; // "RECOVERED", "OPTIMAL", "MODERATE", "FATIGUED", "INSUFFICIENT_DATA"
   completed_habits_count: number;
   total_habits_count: number;
   active_duration_minutes: number;
@@ -263,14 +321,20 @@ export interface SyncQueueItem {
   last_error?: string;
 }
 
+// Expanded GPS State Machine
 export type TrackingState =
   | 'IDLE'
   | 'PREPARING'
+  | 'GPS_READY'
   | 'TRACKING'
   | 'PAUSED'
+  | 'GPS_LOST'
+  | 'RECOVERING'
   | 'FINISHING'
+  | 'PROCESSING'
   | 'COMPLETED'
-  | 'ERROR';
+  | 'ERROR'
+  | 'CANCELLED';
 
 export interface TrackingMetrics {
   distanceMeters: number;
@@ -278,10 +342,16 @@ export interface TrackingMetrics {
   movingSeconds: number;
   currentSpeedMps: number;
   averageSpeedMps: number;
+  maxSpeedMps: number;
   currentPaceSecKm: number;
   averagePaceSecKm: number;
+  bestPaceSecKm?: number;
   elevationGainMeters: number;
+  elevationLossMeters: number;
   currentAltitudeMeters?: number;
   currentAccuracyMeters?: number;
+  gpsQuality: GPSQuality;
   pointsCount: number;
+  currentSplitNumber: number;
+  splits: ActivitySplit[];
 }

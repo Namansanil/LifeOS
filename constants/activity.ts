@@ -9,9 +9,13 @@ export interface ActivityMeta {
   iconName: string;
   isGps: boolean;
   gpsProfile: 'high' | 'balanced' | 'low';
+  primaryMetric: 'PACE' | 'SPEED' | 'ELEVATION' | 'VOLUME' | 'WAVES';
+  accuracyThresholdMeters: number;
   minValidSpeedMps: number;
   maxValidSpeedMps: number;
   maxValidJumpMeters: number;
+  minMovementDeltaMeters: number;
+  splitDistanceMeters: number;
 }
 
 export const ACTIVITY_DEFINITIONS: Record<ActivityType, ActivityMeta> = {
@@ -24,9 +28,13 @@ export const ACTIVITY_DEFINITIONS: Record<ActivityType, ActivityMeta> = {
     iconName: 'footprints',
     isGps: true,
     gpsProfile: 'high',
-    minValidSpeedMps: 0.5,
+    primaryMetric: 'PACE',
+    accuracyThresholdMeters: 18,
+    minValidSpeedMps: 0.6,
     maxValidSpeedMps: 12.0, // ~43.2 km/h
-    maxValidJumpMeters: 40,
+    maxValidJumpMeters: 50,
+    minMovementDeltaMeters: 1.5,
+    splitDistanceMeters: 1000,
   },
   WALK: {
     type: 'WALK',
@@ -37,9 +45,13 @@ export const ACTIVITY_DEFINITIONS: Record<ActivityType, ActivityMeta> = {
     iconName: 'person-walking',
     isGps: true,
     gpsProfile: 'balanced',
+    primaryMetric: 'PACE',
+    accuracyThresholdMeters: 22,
     minValidSpeedMps: 0.3,
-    maxValidSpeedMps: 5.0, // 18 km/h
+    maxValidSpeedMps: 4.5, // 16.2 km/h
     maxValidJumpMeters: 30,
+    minMovementDeltaMeters: 1.0,
+    splitDistanceMeters: 1000,
   },
   CYCLE: {
     type: 'CYCLE',
@@ -50,9 +62,13 @@ export const ACTIVITY_DEFINITIONS: Record<ActivityType, ActivityMeta> = {
     iconName: 'bike',
     isGps: true,
     gpsProfile: 'high',
-    minValidSpeedMps: 0.8,
-    maxValidSpeedMps: 35.0, // 126 km/h
-    maxValidJumpMeters: 100,
+    primaryMetric: 'SPEED',
+    accuracyThresholdMeters: 20,
+    minValidSpeedMps: 1.0,
+    maxValidSpeedMps: 32.0, // ~115 km/h
+    maxValidJumpMeters: 120,
+    minMovementDeltaMeters: 2.0,
+    splitDistanceMeters: 5000,
   },
   HIKE: {
     type: 'HIKE',
@@ -63,9 +79,13 @@ export const ACTIVITY_DEFINITIONS: Record<ActivityType, ActivityMeta> = {
     iconName: 'mountain',
     isGps: true,
     gpsProfile: 'high',
+    primaryMetric: 'ELEVATION',
+    accuracyThresholdMeters: 25,
     minValidSpeedMps: 0.2,
-    maxValidSpeedMps: 6.0,
+    maxValidSpeedMps: 5.5,
     maxValidJumpMeters: 35,
+    minMovementDeltaMeters: 0.8,
+    splitDistanceMeters: 1000,
   },
   SURF: {
     type: 'SURF',
@@ -76,9 +96,13 @@ export const ACTIVITY_DEFINITIONS: Record<ActivityType, ActivityMeta> = {
     iconName: 'waves',
     isGps: true,
     gpsProfile: 'balanced',
-    minValidSpeedMps: 0.2,
-    maxValidSpeedMps: 20.0,
-    maxValidJumpMeters: 60,
+    primaryMetric: 'WAVES',
+    accuracyThresholdMeters: 28,
+    minValidSpeedMps: 0.3,
+    maxValidSpeedMps: 18.0,
+    maxValidJumpMeters: 80,
+    minMovementDeltaMeters: 1.5,
+    splitDistanceMeters: 1000,
   },
   GYM: {
     type: 'GYM',
@@ -89,9 +113,13 @@ export const ACTIVITY_DEFINITIONS: Record<ActivityType, ActivityMeta> = {
     iconName: 'dumbbell',
     isGps: false,
     gpsProfile: 'low',
+    primaryMetric: 'VOLUME',
+    accuracyThresholdMeters: 0,
     minValidSpeedMps: 0,
     maxValidSpeedMps: 0,
     maxValidJumpMeters: 0,
+    minMovementDeltaMeters: 0,
+    splitDistanceMeters: 0,
   },
   MOBILITY: {
     type: 'MOBILITY',
@@ -102,9 +130,13 @@ export const ACTIVITY_DEFINITIONS: Record<ActivityType, ActivityMeta> = {
     iconName: 'sparkles',
     isGps: false,
     gpsProfile: 'low',
+    primaryMetric: 'VOLUME',
+    accuracyThresholdMeters: 0,
     minValidSpeedMps: 0,
     maxValidSpeedMps: 0,
     maxValidJumpMeters: 0,
+    minMovementDeltaMeters: 0,
+    splitDistanceMeters: 0,
   },
   OTHER: {
     type: 'OTHER',
@@ -115,9 +147,13 @@ export const ACTIVITY_DEFINITIONS: Record<ActivityType, ActivityMeta> = {
     iconName: 'activity',
     isGps: false,
     gpsProfile: 'balanced',
+    primaryMetric: 'PACE',
+    accuracyThresholdMeters: 25,
     minValidSpeedMps: 0,
     maxValidSpeedMps: 25.0,
     maxValidJumpMeters: 50,
+    minMovementDeltaMeters: 1.0,
+    splitDistanceMeters: 1000,
   },
 };
 
@@ -139,7 +175,7 @@ export const PILLAR_METADATA: Record<
   },
   LEARN: {
     label: 'Learn',
-    description: 'Academic subjects, deep study, exams & assignments',
+    description: 'Academic subjects, online courses, deep study & certifications',
     color: '#4338CA',
     bgColor: '#EEF2FF',
   },

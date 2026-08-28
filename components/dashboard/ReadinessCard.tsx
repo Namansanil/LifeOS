@@ -7,7 +7,7 @@ import { ScoreBadge } from '@/components/common/ScoreBadge';
 import { HeartPulse } from 'lucide-react-native';
 
 interface ReadinessCardProps {
-  score: number;
+  score: number | null;
   label: string;
   description: string;
 }
@@ -33,14 +33,14 @@ export const ReadinessCard: React.FC<ReadinessCardProps> = ({
       <View style={styles.topRow}>
         <View style={styles.titleColumn}>
           <Text style={[Typography.eyebrow, { color: theme.navy }]}>
-            LIFEOS READINESS
+            BEHAVIORAL READINESS & CAPACITY
           </Text>
           <View style={styles.scoreRow}>
             <Text style={[Typography.displayMedium, { color: theme.textPrimary }]}>
-              {score}%
+              {score !== null ? `${score}%` : '—'}
             </Text>
             <View style={styles.badgeWrapper}>
-              <ScoreBadge label={label} variant="navy" />
+              <ScoreBadge label={score !== null ? label : 'INSUFFICIENT DATA'} variant="navy" />
             </View>
           </View>
         </View>

@@ -202,6 +202,26 @@ class WebDatabase {
     await this.setStorageItem('daily_logs', all);
   }
 
+  // --- GOALS & MILESTONES ---
+  async getGoals(userId: string): Promise<import('@/types').Goal[]> {
+    const all = await this.getStorageItem<import('@/types').Goal[]>('goals', []);
+    return all.filter((g) => g.user_id === userId);
+  }
+
+  async saveGoal(goal: import('@/types').Goal): Promise<void> {
+    const all = await this.getStorageItem<import('@/types').Goal[]>('goals', []);
+    const idx = all.findIndex((g) => g.id === goal.id);
+    if (idx >= 0) all[idx] = goal;
+    else all.unshift(goal);
+    await this.setStorageItem('goals', all);
+  }
+
+  async deleteGoal(goalId: string, userId: string): Promise<void> {
+    const all = await this.getStorageItem<import('@/types').Goal[]>('goals', []);
+    const filtered = all.filter((g) => !(g.id === goalId && g.user_id === userId));
+    await this.setStorageItem('goals', filtered);
+  }
+
   // --- SYNC QUEUE OPERATIONS ---
   async enqueueSync(
     entity: string,

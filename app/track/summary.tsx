@@ -18,13 +18,13 @@ import { Button } from '@/components/common/Button';
 import { Activity, ActivityVisibility } from '@/types';
 import { formatDuration, formatPace } from '@/services/calculations';
 import { ACTIVITY_DEFINITIONS } from '@/constants/activity';
-import { Star, Shield, Check, Trash2, MapPin } from 'lucide-react-native';
+import { Star, Shield, Check, Trash2, MapPin, Zap, Mountain, Activity as ActivityIcon } from 'lucide-react-native';
 import { haptics } from '@/services/haptics';
 
 export default function ActivitySummaryScreen() {
   const { theme, isDark } = useTheme();
   const router = useRouter();
-  const { metrics, activityType, points, reset } = useTracking();
+  const { metrics, activityType, points, rawPoints, splits, reset } = useTracking();
   const { saveNewActivity } = useAppData();
 
   const meta = ACTIVITY_DEFINITIONS[activityType] || ACTIVITY_DEFINITIONS.RUN;
@@ -36,13 +36,16 @@ export default function ActivitySummaryScreen() {
 
   const distKm = (metrics.distanceMeters / 1000).toFixed(2);
   const timeFormatted = formatDuration(metrics.elapsedSeconds);
+  const movingTimeFormatted = formatDuration(metrics.movingSeconds);
   const paceFormatted = formatPace(metrics.averagePaceSecKm);
+  const bestPaceFormatted = metrics.bestPaceSecKm ? formatPace(metrics.bestPaceSecKm) : '--:--';
+  const speedKmh = (metrics.averageSpeedMps * 3.6).toFixed(1);
 
   const handleSave = async () => {
     await haptics.success();
     const newActivity: Activity = {
-      id: `act_${Date.now()}`,
-      user_id: 'demo-user-naman',
+      id: `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      user_id: '',
       type: activityType,
       category: meta.category,
       title: title.trim() || `${meta.label} Session`,
@@ -52,14 +55,20 @@ export default function ActivitySummaryScreen() {
       distance: metrics.distanceMeters,
       moving_time: metrics.movingSeconds || metrics.elapsedSeconds,
       elevation_gain: metrics.elevationGainMeters,
+      elevation_loss: metrics.elevationLossMeters,
       average_speed: metrics.averageSpeedMps,
+      max_speed: metrics.maxSpeedMps,
       average_pace: metrics.averagePaceSecKm,
+      best_pace: metrics.bestPaceSecKm,
       calories: Math.round((metrics.distanceMeters / 1000) * 65),
       source: 'GPS',
       visibility,
       notes: notes.trim() || undefined,
       rating,
+      gps_quality: metrics.gpsQuality,
+      splits: splits.length > 0 ? splits : undefined,
       route: points,
+      raw_route: rawPoints,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -80,15 +89,17 @@ export default function ActivitySummaryScreen() {
       <ScrollView contentContainerStyle={styles.contentContainer} showsVerticalScrollIndicator={false}>
         {/* Header */}
         <View style={styles.header}>
-          <Text style={[Typography.eyebrow, { color: theme.primary }]}>
-            ACTIVITY COMPLETE
-          </Text>
-          <Text style={[Typography.displayMedium, { color: theme.textPrimary, marginTop: 2 }]}>
+          <View style={[styles.qualityBadge, { backgroundColor: isDark ? '#143823' : theme.primaryMuted }]}>
+            <Text style={[Typography.eyebrowSmall, { color: theme.primary }]}>
+              GPS QUALITY: {metrics.gpsQuality}
+            </Text>
+          </View>
+          <Text style={[Typography.displayMedium, { color: theme.textPrimary, marginTop: 6 }]}>
             {distKm} <Text style={Typography.headingMedium}>km</Text>
           </Text>
         </View>
 
-        {/* Core Metrics Grid */}
+        {/* Core Authoritative Metrics Grid */}
         <View
           style={[
             styles.metricsCard,
@@ -99,10 +110,13 @@ export default function ActivitySummaryScreen() {
           <View style={styles.metricRow}>
             <View style={styles.metricItem}>
               <Text style={[Typography.eyebrowSmall, { color: theme.textMuted }]}>
-                TOTAL TIME
+                MOVING TIME
               </Text>
               <Text style={[Typography.headingLarge, { color: theme.textPrimary, marginTop: 2 }]}>
-                {timeFormatted}
+                {movingTimeFormatted}
+              </Text>
+              <Text style={[Typography.caption, { color: theme.textMuted }]}>
+                Elapsed {timeFormatted}
               </Text>
             </View>
 
@@ -110,11 +124,16 @@ export default function ActivitySummaryScreen() {
 
             <View style={styles.metricItem}>
               <Text style={[Typography.eyebrowSmall, { color: theme.textMuted }]}>
-                AVG PACE
+                {meta.primaryMetric === 'SPEED' ? 'AVG SPEED' : 'AVG PACE'}
               </Text>
               <Text style={[Typography.headingLarge, { color: theme.textPrimary, marginTop: 2 }]}>
-                {paceFormatted}
+                {meta.primaryMetric === 'SPEED' ? `${speedKmh} km/h` : paceFormatted}
               </Text>
+              {meta.primaryMetric !== 'SPEED' && metrics.bestPaceSecKm && (
+                <Text style={[Typography.caption, { color: theme.textMuted }]}>
+                  Best {bestPaceFormatted}
+                </Text>
+              )}
             </View>
           </View>
 
@@ -128,6 +147,9 @@ export default function ActivitySummaryScreen() {
               <Text style={[Typography.headingMedium, { color: theme.textPrimary, marginTop: 2 }]}>
                 +{Math.round(metrics.elevationGainMeters)}m
               </Text>
+              <Text style={[Typography.caption, { color: theme.textMuted }]}>
+                Loss -{Math.round(metrics.elevationLossMeters)}m
+              </Text>
             </View>
 
             <View style={[styles.divider, { backgroundColor: theme.borderLight }]} />
@@ -139,9 +161,43 @@ export default function ActivitySummaryScreen() {
               <Text style={[Typography.headingMedium, { color: theme.textPrimary, marginTop: 2 }]}>
                 {Math.round((metrics.distanceMeters / 1000) * 65)} kcal
               </Text>
+              <Text style={[Typography.caption, { color: theme.textMuted }]}>
+                {points.length} GPS pts
+              </Text>
             </View>
           </View>
         </View>
+
+        {/* Splits Table (If Splits exist) */}
+        {splits.length > 0 && (
+          <View style={[styles.splitsSection, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+            <Text style={[Typography.eyebrowSmall, { color: theme.textMuted, marginBottom: 8 }]}>
+              DISTANCE SPLITS ({splits.length})
+            </Text>
+            <View style={styles.splitHeaderRow}>
+              <Text style={[styles.splitColHeader, { color: theme.textMuted }]}>SPLIT</Text>
+              <Text style={[styles.splitColHeader, { color: theme.textMuted }]}>PACE</Text>
+              <Text style={[styles.splitColHeader, { color: theme.textMuted }]}>TIME</Text>
+              <Text style={[styles.splitColHeader, { color: theme.textMuted }]}>ELEV</Text>
+            </View>
+            {splits.map((s) => (
+              <View key={s.splitNumber} style={[styles.splitRow, { borderBottomColor: theme.borderLight }]}>
+                <Text style={[Typography.bodyMedium, { color: theme.textPrimary, fontWeight: '700' }]}>
+                  {s.splitNumber} {meta.primaryMetric === 'SPEED' ? ' (5km)' : ' (1km)'}
+                </Text>
+                <Text style={[Typography.bodyMedium, { color: theme.textPrimary }]}>
+                  {meta.primaryMetric === 'SPEED' ? `${s.speedKmh} km/h` : formatPace(s.paceSecKm)}
+                </Text>
+                <Text style={[Typography.bodyMedium, { color: theme.textSecondary }]}>
+                  {formatDuration(s.movingSeconds || s.durationSeconds)}
+                </Text>
+                <Text style={[Typography.bodyMedium, { color: theme.textSecondary }]}>
+                  +{s.elevationGainMeters}m
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
 
         {/* Inputs */}
         <View style={styles.inputsSection}>
@@ -243,6 +299,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginVertical: Spacing.md,
   },
+  qualityBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: BorderRadius.full,
+  },
   metricsCard: {
     borderRadius: BorderRadius.xl,
     padding: Spacing.cardPadding,
@@ -260,12 +321,35 @@ const styles = StyleSheet.create({
   },
   divider: {
     width: 1,
-    height: 36,
+    height: 44,
   },
   hDivider: {
     height: 1,
     width: '100%',
     marginVertical: Spacing.md,
+  },
+  splitsSection: {
+    marginTop: Spacing.lg,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.cardPadding,
+    borderWidth: 1,
+  },
+  splitHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  splitColHeader: {
+    ...Typography.eyebrowSmall,
+    fontSize: 10,
+  },
+  splitRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
   },
   inputsSection: {
     marginTop: Spacing.xl,

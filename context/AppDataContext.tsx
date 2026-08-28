@@ -1,10 +1,20 @@
 import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
 import { useAuth } from './AuthContext';
-import { db } from '@/services/database';
+import {
+  activitiesRepository,
+  goalsRepository,
+  habitsRepository,
+  learningRepository,
+  projectsRepository,
+  reflectionsRepository,
+  surfRepository,
+  workoutsRepository,
+} from '@/services/repositories';
 import {
   Activity,
   DailyLog,
   DailyPriority,
+  Goal,
   Habit,
   HabitCompletion,
   LifePillar,
@@ -32,12 +42,15 @@ interface AppDataContextValue {
   subjects: Subject[];
   studySessions: StudySession[];
   projects: Project[];
+  goals: Goal[];
   dailyLog: DailyLog | null;
-  lifeScore: number;
+  lifeScore: number | null;
   lifeScoreLabel: string;
-  readinessScore: number;
+  isLifeScoreInsufficient: boolean;
+  readinessScore: number | null;
   readinessLabel: string;
   readinessDescription: string;
+  isReadinessInsufficient: boolean;
   streakDays: number;
   timelineItems: TimelineItem[];
   refreshData: () => Promise<void>;
@@ -50,6 +63,9 @@ interface AppDataContextValue {
   saveNewStudySession: (s: StudySession) => Promise<void>;
   saveNewProject: (p: Project) => Promise<void>;
   saveNewHabit: (h: Habit) => Promise<void>;
+  saveNewGoal: (g: Goal) => Promise<void>;
+  toggleGoalMilestone: (goalId: string, milestoneId: string) => Promise<void>;
+  deleteGoal: (goalId: string) => Promise<void>;
   saveDailyReflection: (journal: string, tomorrowPriorities?: string[]) => Promise<void>;
 }
 
@@ -57,7 +73,7 @@ const AppDataContext = createContext<AppDataContextValue | null>(null);
 
 export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
-  
+
   const getLocalDateString = (d = new Date()) => {
     const year = d.getFullYear();
     const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -76,9 +92,17 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [studySessions, setStudySessions] = useState<StudySession[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [goals, setGoals] = useState<Goal[]>([]);
   const [dailyLog, setDailyLog] = useState<DailyLog | null>(null);
 
   const userId = user?.id || 'demo-user-naman';
+  const enabledPillars = user?.enabled_pillars || {
+    move: true,
+    surf: true,
+    learn: true,
+    build: true,
+    live: true,
+  };
 
   const refreshData = async () => {
     if (!userId) return;
@@ -93,18 +117,20 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         loadedSubjects,
         loadedStudy,
         loadedProjects,
+        loadedGoals,
         loadedLog,
       ] = await Promise.all([
-        db.getHabits(userId),
-        db.getHabitCompletions(userId, todayDate),
-        db.getDailyPriorities(userId, todayDate),
-        db.getActivities(userId),
-        db.getWorkouts(userId),
-        db.getSurfSessions(userId),
-        db.getSubjects(userId),
-        db.getStudySessions(userId),
-        db.getProjects(userId),
-        db.getDailyLog(userId, todayDate),
+        habitsRepository.getHabits(userId),
+        habitsRepository.getHabitCompletions(userId, todayDate),
+        habitsRepository.getDailyPriorities(userId, todayDate),
+        activitiesRepository.getActivities(userId),
+        workoutsRepository.getWorkouts(userId),
+        surfRepository.getSurfSessions(userId),
+        learningRepository.getSubjects(userId),
+        learningRepository.getStudySessions(userId),
+        projectsRepository.getProjects(userId),
+        goalsRepository.getGoals(userId),
+        reflectionsRepository.getDailyLog(userId, todayDate),
       ]);
 
       setHabits(loadedHabits);
@@ -116,6 +142,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setSubjects(loadedSubjects);
       setStudySessions(loadedStudy);
       setProjects(loadedProjects);
+      setGoals(loadedGoals);
       setDailyLog(loadedLog);
     } catch (err) {
       console.warn('Error refreshing app data:', err);
@@ -126,8 +153,12 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     refreshData();
   }, [userId, todayDate]);
 
-  // Dynamic Life Score Calculation
-  const { score: lifeScore, label: lifeScoreLabel } = useMemo(() => {
+  // Dynamic Honest Life Score (Aware of disabled pillars & zero fabrication)
+  const {
+    score: lifeScore,
+    label: lifeScoreLabel,
+    isInsufficientData: isLifeScoreInsufficient,
+  } = useMemo(() => {
     return calculateDailyScore({
       priorities,
       habits,
@@ -137,25 +168,40 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       surfSessions: surfSessions.filter((s) => s.started_at.startsWith(todayDate)),
       studySessions: studySessions.filter((s) => s.started_at.startsWith(todayDate)),
       projects,
+      enabledPillars,
     });
-  }, [priorities, habits, habitCompletions, activities, workouts, surfSessions, studySessions, projects, todayDate]);
+  }, [
+    priorities,
+    habits,
+    habitCompletions,
+    activities,
+    workouts,
+    surfSessions,
+    studySessions,
+    projects,
+    enabledPillars,
+    todayDate,
+  ]);
 
-  // Dynamic Readiness Calculation
+  // Dynamic Honest Readiness (Behavioral load & recovery, handles insufficient data)
   const {
     score: readinessScore,
     label: readinessLabel,
     description: readinessDescription,
+    isInsufficientData: isReadinessInsufficient,
   } = useMemo(() => {
     const recentTrainingMinutes = workouts.concat(activities as any).reduce(
       (acc, item) => acc + (item.duration || 0) / 60,
       0
     );
+    const hasHistory = activities.length > 0 || workouts.length > 0 || habitCompletions.length > 0;
     return calculateReadiness({
       recentDaysActivitiesCount: activities.length + workouts.length,
       recentTrainingLoadMinutes: recentTrainingMinutes,
-      habitConsistencyPercent: habits.length > 0 ? (habitCompletions.length / habits.length) * 100 : 85,
+      habitConsistencyPercent:
+        habits.length > 0 ? (habitCompletions.length / habits.length) * 100 : 0,
       restDaysInPastWeek: 1,
-      sleepHours: 7.8,
+      hasHistoricalData: hasHistory,
     });
   }, [activities, workouts, habits, habitCompletions]);
 
@@ -286,16 +332,15 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
     }
 
-    // Sort chronologically ascending
     return list.sort((a, b) => (a.timestamp > b.timestamp ? 1 : -1));
   }, [activities, workouts, surfSessions, studySessions, subjects, todayDate]);
 
-  // Mutations
+  // Mutations via Repository Layer
   const toggleHabit = async (habitId: string) => {
     const isCompleted = habitCompletions.some(
       (c) => c.habit_id === habitId && c.completed
     );
-    const updated = await db.toggleHabitCompletion(
+    const updated = await habitsRepository.toggleHabit(
       habitId,
       userId,
       todayDate,
@@ -306,7 +351,6 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (updated.completed) filtered.push(updated);
       return filtered;
     });
-    await db.enqueueSync('habit_completion', updated.id, 'CREATE', updated);
   };
 
   const togglePriority = async (priorityId: string) => {
@@ -319,49 +363,75 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
     const newList = priorities.map((p) => (p.id === priorityId ? updated : p));
     setPriorities(newList);
-    await db.saveDailyPriorities(newList);
-    await db.enqueueSync('daily_priority', updated.id, 'UPDATE', updated);
+    await habitsRepository.saveDailyPriorities(newList);
   };
 
   const savePriorities = async (items: DailyPriority[]) => {
     setPriorities(items);
-    await db.saveDailyPriorities(items);
+    await habitsRepository.saveDailyPriorities(items);
   };
 
   const saveNewActivity = async (act: Activity) => {
-    await db.saveActivity(act);
-    setActivities((prev) => [act, ...prev.filter((a) => a.id !== act.id)]);
-    await db.enqueueSync('activity', act.id, 'CREATE', act);
+    const activityWithUser = { ...act, user_id: userId };
+    await activitiesRepository.saveActivity(activityWithUser);
+    setActivities((prev) => [activityWithUser, ...prev.filter((a) => a.id !== act.id)]);
   };
 
   const saveNewWorkout = async (w: Workout) => {
-    await db.saveWorkout(w);
-    setWorkouts((prev) => [w, ...prev.filter((item) => item.id !== w.id)]);
-    await db.enqueueSync('workout', w.id, 'CREATE', w);
+    const workoutWithUser = { ...w, user_id: userId };
+    await workoutsRepository.saveWorkout(workoutWithUser);
+    setWorkouts((prev) => [workoutWithUser, ...prev.filter((item) => item.id !== w.id)]);
   };
 
   const saveNewSurfSession = async (s: SurfSession) => {
-    await db.saveSurfSession(s);
-    setSurfSessions((prev) => [s, ...prev.filter((item) => item.id !== s.id)]);
-    await db.enqueueSync('surf_session', s.id, 'CREATE', s);
+    const surfWithUser = { ...s, user_id: userId };
+    await surfRepository.saveSurfSession(surfWithUser);
+    setSurfSessions((prev) => [surfWithUser, ...prev.filter((item) => item.id !== s.id)]);
   };
 
   const saveNewStudySession = async (s: StudySession) => {
-    await db.saveStudySession(s);
-    setStudySessions((prev) => [s, ...prev]);
-    await db.enqueueSync('study_session', s.id, 'CREATE', s);
+    const studyWithUser = { ...s, user_id: userId };
+    await learningRepository.saveStudySession(studyWithUser);
+    setStudySessions((prev) => [studyWithUser, ...prev]);
   };
 
   const saveNewProject = async (p: Project) => {
-    await db.saveProject(p);
-    setProjects((prev) => [p, ...prev.filter((item) => item.id !== p.id)]);
-    await db.enqueueSync('project', p.id, 'CREATE', p);
+    const projectWithUser = { ...p, user_id: userId };
+    await projectsRepository.saveProject(projectWithUser);
+    setProjects((prev) => [projectWithUser, ...prev.filter((item) => item.id !== p.id)]);
   };
 
   const saveNewHabit = async (h: Habit) => {
-    await db.saveHabit(h);
-    setHabits((prev) => [...prev, h]);
-    await db.enqueueSync('habit', h.id, 'CREATE', h);
+    const habitWithUser = { ...h, user_id: userId };
+    await habitsRepository.saveHabit(habitWithUser);
+    setHabits((prev) => [...prev, habitWithUser]);
+  };
+
+  const saveNewGoal = async (g: Goal) => {
+    const goalWithUser = { ...g, user_id: userId };
+    await goalsRepository.saveGoal(goalWithUser);
+    setGoals((prev) => [goalWithUser, ...prev.filter((item) => item.id !== g.id)]);
+  };
+
+  const toggleGoalMilestone = async (goalId: string, milestoneId: string) => {
+    const target = goals.find((g) => g.id === goalId);
+    if (!target) return;
+    const ms = target.milestones.find((m) => m.id === milestoneId);
+    if (!ms) return;
+    const updated = await goalsRepository.toggleMilestone(
+      userId,
+      goalId,
+      milestoneId,
+      !ms.completed
+    );
+    if (updated) {
+      setGoals((prev) => prev.map((g) => (g.id === goalId ? updated : g)));
+    }
+  };
+
+  const deleteGoal = async (goalId: string) => {
+    await goalsRepository.deleteGoal(goalId, userId);
+    setGoals((prev) => prev.filter((g) => g.id !== goalId));
   };
 
   const saveDailyReflection = async (journal: string, tomorrowPriorities?: string[]) => {
@@ -382,11 +452,9 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    await db.saveDailyLog(log);
+    await reflectionsRepository.saveDailyLog(log);
     setDailyLog(log);
-    await db.enqueueSync('daily_log', log.id, 'CREATE', log);
 
-    // If tomorrow priorities provided
     if (tomorrowPriorities && tomorrowPriorities.length > 0) {
       const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
       const tomorrowItems: DailyPriority[] = tomorrowPriorities.map((title, idx) => ({
@@ -398,7 +466,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         completed: false,
         category: 'LIVE',
       }));
-      await db.saveDailyPriorities(tomorrowItems);
+      await habitsRepository.saveDailyPriorities(tomorrowItems);
     }
   };
 
@@ -415,12 +483,15 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         subjects,
         studySessions,
         projects,
+        goals,
         dailyLog,
         lifeScore,
         lifeScoreLabel,
+        isLifeScoreInsufficient,
         readinessScore,
         readinessLabel,
         readinessDescription,
+        isReadinessInsufficient,
         streakDays,
         timelineItems,
         refreshData,
@@ -433,6 +504,9 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         saveNewStudySession,
         saveNewProject,
         saveNewHabit,
+        saveNewGoal,
+        toggleGoalMilestone,
+        deleteGoal,
         saveDailyReflection,
       }}
     >

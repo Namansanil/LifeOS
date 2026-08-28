@@ -9,8 +9,9 @@ import { Zap } from 'lucide-react-native';
 import { haptics } from '@/services/haptics';
 
 interface DailyScoreHeroProps {
-  score: number;
+  score: number | null;
   label: string;
+  isInsufficient?: boolean;
   completedPriorities: number;
   totalPriorities: number;
   completedHabits: number;
@@ -21,6 +22,7 @@ interface DailyScoreHeroProps {
 export const DailyScoreHero: React.FC<DailyScoreHeroProps> = ({
   score,
   label,
+  isInsufficient = false,
   completedPriorities,
   totalPriorities,
   completedHabits,
@@ -50,14 +52,14 @@ export const DailyScoreHero: React.FC<DailyScoreHeroProps> = ({
       <View style={styles.topRow}>
         <View>
           <Text style={[Typography.eyebrow, { color: theme.textMuted }]}>
-            TODAY'S PROGRESS
+            TODAY'S INTENTIONAL LIFE SCORE
           </Text>
           <View style={styles.scoreRow}>
             <Text style={[Typography.displayMetric, { color: theme.textPrimary }]}>
-              {score}%
+              {score !== null ? `${score}%` : '—'}
             </Text>
             <View style={styles.badgeWrapper}>
-              <ScoreBadge label={label} variant="primary" />
+              <ScoreBadge label={score !== null ? label : 'NEW DAY'} variant="primary" />
             </View>
           </View>
         </View>
@@ -74,7 +76,7 @@ export const DailyScoreHero: React.FC<DailyScoreHeroProps> = ({
 
       {/* Progress Bar */}
       <View style={styles.progressSection}>
-        <ProgressBar progress={score} height={8} color={theme.primary} />
+        <ProgressBar progress={score !== null ? score : 0} height={8} color={theme.primary} />
       </View>
 
       {/* Metric Breakdown Pills */}

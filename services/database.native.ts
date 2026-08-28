@@ -200,6 +200,22 @@ class LocalDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS goals (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        pillar TEXT NOT NULL,
+        target_date TEXT,
+        status TEXT NOT NULL DEFAULT 'ACTIVE',
+        progress_percentage REAL NOT NULL DEFAULT 0,
+        milestones_json TEXT,
+        linked_project_ids_json TEXT,
+        linked_habit_ids_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS sync_queue (
         id TEXT PRIMARY KEY,
         entity TEXT NOT NULL,
@@ -699,6 +715,65 @@ class LocalDatabase {
     if (idx >= 0) all[idx] = log;
     else all.push(log);
     await this.setStorageItem('daily_logs', all);
+  }
+
+  // --- GOALS & MILESTONES ---
+  async getGoals(userId: string): Promise<import('@/types').Goal[]> {
+    await this.init();
+    if (this.db) {
+      const rows = await this.db.getAllAsync<any>(
+        `SELECT * FROM goals WHERE user_id = ? ORDER BY created_at DESC`,
+        [userId]
+      );
+      return rows.map((r) => ({
+        ...r,
+        milestones: r.milestones_json ? JSON.parse(r.milestones_json) : [],
+        linked_project_ids: r.linked_project_ids_json ? JSON.parse(r.linked_project_ids_json) : [],
+        linked_habit_ids: r.linked_habit_ids_json ? JSON.parse(r.linked_habit_ids_json) : [],
+      }));
+    }
+    const all = await this.getStorageItem<import('@/types').Goal[]>('goals', []);
+    return all.filter((g) => g.user_id === userId);
+  }
+
+  async saveGoal(goal: import('@/types').Goal): Promise<void> {
+    await this.init();
+    if (this.db) {
+      await this.db.runAsync(
+        `INSERT OR REPLACE INTO goals (id, user_id, title, description, pillar, target_date, status, progress_percentage, milestones_json, linked_project_ids_json, linked_habit_ids_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          goal.id,
+          goal.user_id,
+          goal.title,
+          goal.description || null,
+          goal.pillar,
+          goal.target_date || null,
+          goal.status,
+          goal.progress_percentage || 0,
+          JSON.stringify(goal.milestones || []),
+          JSON.stringify(goal.linked_project_ids || []),
+          JSON.stringify(goal.linked_habit_ids || []),
+          goal.created_at,
+          goal.updated_at,
+        ]
+      );
+    }
+    const all = await this.getStorageItem<import('@/types').Goal[]>('goals', []);
+    const idx = all.findIndex((g) => g.id === goal.id);
+    if (idx >= 0) all[idx] = goal;
+    else all.unshift(goal);
+    await this.setStorageItem('goals', all);
+  }
+
+  async deleteGoal(goalId: string, userId: string): Promise<void> {
+    await this.init();
+    if (this.db) {
+      await this.db.runAsync(`DELETE FROM goals WHERE id = ? AND user_id = ?`, [goalId, userId]);
+    }
+    const all = await this.getStorageItem<import('@/types').Goal[]>('goals', []);
+    const filtered = all.filter((g) => !(g.id === goalId && g.user_id === userId));
+    await this.setStorageItem('goals', filtered);
   }
 
   // --- SYNC QUEUE OPERATIONS ---

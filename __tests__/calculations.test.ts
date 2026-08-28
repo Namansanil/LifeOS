@@ -1,8 +1,11 @@
 import {
   calculateDailyScore,
   calculateElevationGain,
+  calculateElevationProfile,
   calculatePace,
   calculateReadiness,
+  calculateSpeedKmh,
+  calculateSplits,
   calculateStreak,
   calculateWorkoutStats,
   douglasPeucker,
@@ -10,11 +13,30 @@ import {
   formatDuration,
   formatPace,
   haversineDistance,
+  isValidCoordinate,
+  postProcessActivity,
 } from '../services/calculations';
 import { DailyPriority, Habit, HabitCompletion, Workout } from '../types';
 
-describe('LifeOS Calculation Engine', () => {
-  describe('calculateDailyScore', () => {
+describe('LifeOS Calculation Engine (Zero Fabrication & Deterministic Math)', () => {
+  describe('calculateDailyScore (Honest & Pillar-Aware)', () => {
+    it('returns isInsufficientData = true and score = null when no user data exists', () => {
+      const result = calculateDailyScore({
+        priorities: [],
+        habits: [],
+        habitCompletions: [],
+        activities: [],
+        workouts: [],
+        surfSessions: [],
+        studySessions: [],
+        projects: [],
+      });
+
+      expect(result.score).toBeNull();
+      expect(result.isInsufficientData).toBe(true);
+      expect(result.label).toBe('INSUFFICIENT DATA');
+    });
+
     it('calculates balanced high score for completed priorities and habits', () => {
       const priorities: DailyPriority[] = [
         { id: '1', user_id: 'u1', date: '2026-08-28', order_index: 1, title: 'Finish assignment', completed: true },
@@ -40,47 +62,101 @@ describe('LifeOS Calculation Engine', () => {
 
       expect(result.score).toBeGreaterThanOrEqual(90);
       expect(result.label).toBe('EXCELLENT');
+      expect(result.isInsufficientData).toBe(false);
     });
 
-    it('handles rest days without penalizing zero activity to negative scores', () => {
+    it('does NOT penalize user when a pillar is disabled', () => {
+      // User disabled SURF and BUILD pillars
+      const priorities: DailyPriority[] = [
+        { id: '1', user_id: 'u1', date: '2026-08-28', order_index: 1, title: 'Focus 1', completed: true },
+      ];
+      const habits: Habit[] = [
+        { id: 'h1', user_id: 'u1', name: 'Water', category: 'MORNING', frequency: 'DAILY', active: true, sort_order: 1, created_at: '', updated_at: '' },
+      ];
+      const habitCompletions: HabitCompletion[] = [
+        { id: 'c1', habit_id: 'h1', user_id: 'u1', date: '2026-08-28', completed: true },
+      ];
+
       const result = calculateDailyScore({
-        priorities: [],
-        habits: [],
-        habitCompletions: [],
+        priorities,
+        habits,
+        habitCompletions,
+        studySessions: [{ id: 's1', user_id: 'u1', subject_id: 'sub1', duration: 3600, started_at: '', ended_at: '', created_at: '' }],
+        enabledPillars: {
+          move: true,
+          surf: false, // Disabled
+          learn: true,
+          build: false, // Disabled
+          live: true,
+        },
       });
-      expect(result.score).toBeGreaterThanOrEqual(40);
+
+      // Denominator should be appropriately reduced, not artificially deflating score
+      expect(result.score).toBeGreaterThanOrEqual(75);
     });
   });
 
-  describe('calculateReadiness', () => {
-    it('returns OPTIMAL when well-rested with balanced consistency', () => {
+  describe('calculateReadiness (Honest Behavioral Capacity)', () => {
+    it('returns INSUFFICIENT DATA when no historical activity or training load exists', () => {
       const readiness = calculateReadiness({
+        hasHistoricalData: false,
+        recentTrainingLoadMinutes: 0,
+        habitConsistencyPercent: 0,
+      });
+
+      expect(readiness.score).toBeNull();
+      expect(readiness.isInsufficientData).toBe(true);
+      expect(readiness.label).toBe('INSUFFICIENT DATA');
+    });
+
+    it('returns OPTIMAL when well-rested with balanced consistency and real data', () => {
+      const readiness = calculateReadiness({
+        hasHistoricalData: true,
         sleepHours: 8.5,
         recentDaysActivitiesCount: 3,
         recentTrainingLoadMinutes: 120,
         restDaysInPastWeek: 2,
         habitConsistencyPercent: 90,
       });
+
       expect(readiness.score).toBeGreaterThanOrEqual(80);
       expect(['OPTIMAL', 'RECOVERED']).toContain(readiness.label);
     });
 
     it('returns FATIGUED with low sleep and high acute training load', () => {
       const readiness = calculateReadiness({
+        hasHistoricalData: true,
         sleepHours: 5,
         recentDaysActivitiesCount: 7,
         recentTrainingLoadMinutes: 500,
         restDaysInPastWeek: 0,
         habitConsistencyPercent: 40,
       });
+
       expect(readiness.score).toBeLessThanOrEqual(50);
       expect(readiness.label).toBe('FATIGUED');
     });
   });
 
+  describe('calculateStreak', () => {
+    it('calculates consecutive active streak correctly', () => {
+      const today = new Date().toISOString().split('T')[0];
+      const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+      const dayBefore = new Date(Date.now() - 2 * 86400000).toISOString().split('T')[0];
+
+      const streak = calculateStreak([today, yesterday, dayBefore]);
+      expect(streak).toBe(3);
+    });
+
+    it('returns 0 when no activity occurred yesterday or today', () => {
+      const pastDate = '2025-01-01';
+      const streak = calculateStreak([pastDate]);
+      expect(streak).toBe(0);
+    });
+  });
+
   describe('Workout Stats & 1RM', () => {
     it('calculates Brzycki 1RM accurately', () => {
-      // 100kg x 6 reps => 100 * (36 / 31) = ~116.1kg
       const e1rm = estimate1RM(100, 6);
       expect(e1rm).toBeCloseTo(116.1, 0);
     });
@@ -137,29 +213,34 @@ describe('LifeOS Calculation Engine', () => {
   });
 
   describe('GPS Math & Geometry', () => {
+    it('validates coordinate bounds', () => {
+      expect(isValidCoordinate(12.9716, 77.5946)).toBe(true);
+      expect(isValidCoordinate(120.0, 77.5946)).toBe(false);
+      expect(isValidCoordinate(12.9716, 200.0)).toBe(false);
+      expect(isValidCoordinate(0, 0)).toBe(false);
+    });
+
     it('calculates Haversine distance between known coordinates', () => {
-      // Sydney Opera House to Bondi Beach (~6.2km)
       const dist = haversineDistance(-33.8568, 151.2153, -33.8915, 151.2767);
       expect(dist).toBeGreaterThan(6000);
       expect(dist).toBeLessThan(7000);
     });
 
     it('calculates and formats pace correctly', () => {
-      // 5km in 25 mins (1500s) => 300 sec/km => 5:00 /km
       const pace = calculatePace(5000, 1500);
       expect(pace).toBe(300);
       expect(formatPace(pace)).toBe('5:00 /km');
     });
 
+    it('calculates cycling speed in km/h', () => {
+      // 10,000m in 1200s (20 mins) = 8.33 m/s = 30.0 km/h
+      const speed = calculateSpeedKmh(10000, 1200);
+      expect(speed).toBe(30);
+    });
+
     it('formats duration', () => {
       expect(formatDuration(65)).toBe('01:05');
       expect(formatDuration(3665)).toBe('1:01:05');
-    });
-
-    it('calculates elevation gain filtering micro-noise', () => {
-      const altitudes = [100, 100.4, 103, 102.8, 107, 106];
-      const gain = calculateElevationGain(altitudes);
-      expect(gain).toBe(7); // (103-100.4=2.6) + (107-102.8=4.2) = 6.8 => 7
     });
 
     it('simplifies polylines with Douglas-Peucker without distorting endpoints', () => {

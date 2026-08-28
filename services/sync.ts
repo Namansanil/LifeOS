@@ -95,6 +95,11 @@ class SyncService {
         return 'daily_priorities';
       case 'daily_log':
         return 'daily_logs';
+      case 'goal':
+      case 'goals':
+        return 'goals';
+      case 'goal_milestone':
+        return 'goal_milestones';
       default:
         return entity;
     }
