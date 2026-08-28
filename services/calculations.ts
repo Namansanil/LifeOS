@@ -545,6 +545,7 @@ export function postProcessActivity(params: {
   elevationLossMeters: number;
   splits: ActivitySplit[];
   processedRoute: RoutePoint[];
+  displayRoute: RoutePoint[];
   gpsQuality: GPSQuality;
 } {
   const { rawPoints = [], type, startedAt, endedAt } = params;
@@ -679,7 +680,8 @@ export function postProcessActivity(params: {
     elevationGainMeters: elev.gainMeters,
     elevationLossMeters: elev.lossMeters,
     splits,
-    processedRoute: simplifiedRoute,
+    processedRoute: validPoints,
+    displayRoute: simplifiedRoute,
     gpsQuality,
   };
 }

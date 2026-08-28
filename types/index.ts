@@ -96,6 +96,7 @@ export interface Activity {
   gps_quality?: GPSQuality;
   splits?: ActivitySplit[];
   route?: RoutePoint[];
+  display_route?: RoutePoint[];
   raw_route?: RawGPSPoint[];
   created_at: string;
   updated_at: string;

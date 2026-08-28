@@ -15,6 +15,7 @@ import { formatDuration, formatPace } from '@/services/calculations';
 import { ACTIVITY_DEFINITIONS } from '@/constants/activity';
 import { Pause, Play, Square, Navigation, MapPin } from 'lucide-react-native';
 import { haptics } from '@/services/haptics';
+import { LiveTrackingMap } from '@/components/maps/LiveTrackingMap';
 
 export default function ActiveTrackingScreen() {
   const { theme, isDark } = useTheme();
@@ -141,14 +142,14 @@ export default function ActiveTrackingScreen() {
         </View>
       </View>
 
-      {/* Live Route Preview / Status */}
+      {/* Live Route Map with Polyline, Accuracy Halo, and Recenter */}
       <View style={styles.mapContainer}>
-        <View style={styles.mapMock}>
-          <Navigation size={24} color="#4ADE80" />
-          <Text style={[Typography.caption, { color: '#94A3B8', marginTop: 6 }]}>
-            {points.length > 0 ? `${points.length} GPS coordinates recorded` : 'Acquiring GPS fix...'}
-          </Text>
-        </View>
+        <LiveTrackingMap
+          points={points}
+          currentAccuracy={metrics.currentAccuracyMeters}
+          activityType={activityType}
+          state={state}
+        />
       </View>
 
       {/* Control Buttons */}

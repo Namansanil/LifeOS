@@ -326,6 +326,7 @@ export class GPSTrackingEngine {
       gps_quality: postResults.gpsQuality,
       splits: postResults.splits,
       route: postResults.processedRoute,
+      display_route: postResults.displayRoute,
       raw_route: this.rawPoints,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
