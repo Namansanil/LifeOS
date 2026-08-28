@@ -37,10 +37,14 @@ export default function ActiveTrackingScreen() {
   }, [state, start]);
 
   const meta = ACTIVITY_DEFINITIONS[activityType] || ACTIVITY_DEFINITIONS.RUN;
+  const isSpeedActivity = meta.primaryMetric === 'SPEED';
   const distKm = (metrics.distanceMeters / 1000).toFixed(2);
   const timeStr = formatDuration(metrics.elapsedSeconds);
+  const movingTimeStr = formatDuration(metrics.movingSeconds);
+  const showMovingTime = metrics.elapsedSeconds > 30 && metrics.movingSeconds < metrics.elapsedSeconds;
   const paceStr = formatPace(metrics.currentPaceSecKm);
   const speedKmh = (metrics.currentSpeedMps * 3.6).toFixed(1);
+  const avgSpeedKmh = (metrics.averageSpeedMps * 3.6).toFixed(1);
 
   const handleFinish = async () => {
     await finish();
@@ -69,35 +73,53 @@ export default function ActiveTrackingScreen() {
         </Text>
       </View>
 
-      {/* Secondary Metrics Grid */}
+      {/* Secondary Metrics Grid: Row 1 */}
       <View style={styles.metricsGrid}>
         <View style={styles.metricItem}>
           <Text style={[Typography.eyebrowSmall, { color: '#94A3B8' }]}>
-            TIME
+            {showMovingTime ? 'MOVING TIME' : 'ELAPSED TIME'}
           </Text>
           <Text style={[Typography.displayMetricSmall, { color: '#FFFFFF', marginTop: 4 }]}>
-            {timeStr}
+            {showMovingTime ? movingTimeStr : timeStr}
           </Text>
+          {showMovingTime && (
+            <Text style={[Typography.caption, { color: '#64748B' }]}>
+              Total {timeStr}
+            </Text>
+          )}
         </View>
 
         <View style={styles.metricItem}>
           <Text style={[Typography.eyebrowSmall, { color: '#94A3B8' }]}>
-            CURRENT PACE
+            {isSpeedActivity ? 'CURRENT SPEED' : 'CURRENT PACE'}
           </Text>
-          <Text style={[Typography.displayMetricSmall, { color: '#FFFFFF', marginTop: 4 }]}>
-            {paceStr.replace(' /km', '')}
-          </Text>
-          <Text style={[Typography.caption, { color: '#64748B' }]}>/km</Text>
+          {isSpeedActivity ? (
+            <>
+              <Text style={[Typography.displayMetricSmall, { color: '#FFFFFF', marginTop: 4 }]}>
+                {speedKmh}
+              </Text>
+              <Text style={[Typography.caption, { color: '#64748B' }]}>km/h</Text>
+            </>
+          ) : (
+            <>
+              <Text style={[Typography.displayMetricSmall, { color: '#FFFFFF', marginTop: 4 }]}>
+                {paceStr.replace(' /km', '')}
+              </Text>
+              <Text style={[Typography.caption, { color: '#64748B' }]}>/km</Text>
+            </>
+          )}
         </View>
       </View>
 
+      {/* Secondary Metrics Grid: Row 2 */}
       <View style={styles.metricsGrid}>
         <View style={styles.metricItem}>
           <Text style={[Typography.eyebrowSmall, { color: '#94A3B8' }]}>
-            SPEED
+            {isSpeedActivity ? 'AVG SPEED' : 'SPEED'}
           </Text>
           <Text style={[Typography.headingLarge, { color: '#FFFFFF', marginTop: 4 }]}>
-            {speedKmh} <Text style={[Typography.caption, { color: '#64748B' }]}>km/h</Text>
+            {isSpeedActivity ? avgSpeedKmh : speedKmh}{' '}
+            <Text style={[Typography.caption, { color: '#64748B' }]}>km/h</Text>
           </Text>
         </View>
 
