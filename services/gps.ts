@@ -180,11 +180,17 @@ export class GPSTrackingEngine {
     this.state = 'PREPARING';
     this.notifyState();
 
-    // Check GPS Signal Availability
+    // Check GPS Signal Availability & Permissions
     if (Platform.OS !== 'web') {
       try {
         const hasServices = await Location.hasServicesEnabledAsync();
         if (!hasServices) {
+          this.state = 'ERROR';
+          this.notifyState();
+          return false;
+        }
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
           this.state = 'ERROR';
           this.notifyState();
           return false;
@@ -609,6 +615,14 @@ export class GPSTrackingEngine {
     if (Platform.OS === 'web') return;
 
     try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        console.warn('Location permission not granted for tracking');
+        this.state = 'ERROR';
+        this.notifyState();
+        return;
+      }
+
       const config = ACTIVITY_DEFINITIONS[this.activityType];
       const accuracy = Location.Accuracy.BestForNavigation;
 

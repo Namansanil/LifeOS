@@ -31,10 +31,18 @@ export default function ActiveTrackingScreen() {
   } = useTracking();
 
   useEffect(() => {
-    if (state === 'PREPARING') {
+    if (state === 'PREPARING' || state === 'GPS_READY') {
       start();
     }
   }, [state, start]);
+
+  const handlePlayPress = async () => {
+    if (state === 'PAUSED') {
+      await resume();
+    } else {
+      await start();
+    }
+  };
 
   const meta = ACTIVITY_DEFINITIONS[activityType] || ACTIVITY_DEFINITIONS.RUN;
   const isSpeedActivity = meta.primaryMetric === 'SPEED';
@@ -159,8 +167,8 @@ export default function ActiveTrackingScreen() {
         ) : (
           <View style={styles.pausedControls}>
             <Pressable
-              accessibilityLabel="Resume Tracking"
-              onPress={resume}
+              accessibilityLabel={state === 'PAUSED' ? 'Resume Tracking' : 'Start Tracking'}
+              onPress={handlePlayPress}
               style={({ pressed }) => [
                 styles.controlBtn,
                 { backgroundColor: '#4ADE80', transform: [{ scale: pressed ? 0.94 : 1 }] },
