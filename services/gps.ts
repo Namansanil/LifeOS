@@ -22,12 +22,14 @@ class GPSTrackingEngine {
   private state: TrackingState = 'IDLE';
   private activityType: ActivityType = 'RUN';
   private points: RoutePoint[] = [];
+  private recentPointsWindow: RoutePoint[] = []; // Rolling window for smooth pace
   private startTime: number = 0;
   private pausedDuration: number = 0;
   private lastPauseTimestamp: number = 0;
   private foregroundSubscription: Location.LocationSubscription | null = null;
   private timerInterval: any = null;
   private listeners: Set<GPSListener> = new Set();
+  private smoothedSpeedMps: number = 0;
 
   private metrics: TrackingMetrics = {
     distanceMeters: 0,
@@ -92,9 +94,11 @@ class GPSTrackingEngine {
 
     this.activityType = type;
     this.points = [];
+    this.recentPointsWindow = [];
     this.startTime = 0;
     this.pausedDuration = 0;
     this.lastPauseTimestamp = 0;
+    this.smoothedSpeedMps = 0;
     this.metrics = {
       distanceMeters: 0,
       elapsedSeconds: 0,
@@ -133,6 +137,9 @@ class GPSTrackingEngine {
 
     this.state = 'PAUSED';
     this.lastPauseTimestamp = Date.now();
+    this.smoothedSpeedMps = 0;
+    this.metrics.currentSpeedMps = 0;
+    this.notifyMetrics();
     this.notifyState();
     return true;
   }
@@ -170,12 +177,14 @@ class GPSTrackingEngine {
     await this.stopLocationTracking();
     this.state = 'IDLE';
     this.points = [];
+    this.recentPointsWindow = [];
+    this.smoothedSpeedMps = 0;
     this.notifyState();
     await AsyncStorage.removeItem('@lifeos_active_gps_session');
   }
 
   // ==========================================
-  // POINT PROCESSING & FILTERING
+  // POINT PROCESSING & ADVANCED ACCURACY FILTERING
   // ==========================================
 
   handleNewLocation(location: Location.LocationObject) {
@@ -184,8 +193,8 @@ class GPSTrackingEngine {
     const { latitude, longitude, altitude, accuracy, speed } = location.coords;
     const timestamp = location.timestamp;
 
-    // Filter 1: Accuracy check (reject poor signals > 35m)
-    if (accuracy !== null && accuracy > 35) {
+    // Filter 1: Strict Accuracy Check (reject noisy signals > 20m)
+    if (accuracy !== null && accuracy > 20) {
       this.metrics.currentAccuracyMeters = accuracy;
       this.notifyMetrics();
       return;
@@ -193,7 +202,7 @@ class GPSTrackingEngine {
 
     const activityConfig = ACTIVITY_DEFINITIONS[this.activityType] || ACTIVITY_DEFINITIONS.RUN;
 
-    // Filter 2: Speed sanity check
+    // Filter 2: Speed sanity check (e.g. running cannot exceed 12 m/s / 43 km/h)
     if (speed !== null && speed > activityConfig.maxValidSpeedMps) {
       return;
     }
@@ -203,19 +212,19 @@ class GPSTrackingEngine {
       longitude,
       altitude: altitude ?? undefined,
       accuracy: accuracy ?? undefined,
-      speed: speed ?? undefined,
+      speed: speed !== null && speed >= 0 ? speed : undefined,
       timestamp,
     };
 
     if (this.points.length > 0) {
       const lastPoint = this.points[this.points.length - 1];
 
-      // Filter 3: Duplicate point filter
+      // Filter 3: Exact duplicate coordinates filter
       if (lastPoint.latitude === latitude && lastPoint.longitude === longitude) {
         return;
       }
 
-      // Filter 4: Jump rejection
+      // Filter 4: Jump rejection (teleporting / signal glitch)
       const stepDistance = haversineDistance(
         lastPoint.latitude,
         lastPoint.longitude,
@@ -227,40 +236,83 @@ class GPSTrackingEngine {
         return;
       }
 
-      // Accumulate distance
-      this.metrics.distanceMeters += stepDistance;
-
-      // Check moving speed
-      const timeDeltaSec = Math.max(1, (timestamp - lastPoint.timestamp) / 1000);
+      const timeDeltaSec = Math.max(0.5, (timestamp - lastPoint.timestamp) / 1000);
       const computedSpeed = stepDistance / timeDeltaSec;
-      if (computedSpeed >= activityConfig.minValidSpeedMps) {
-        this.metrics.movingSeconds += timeDeltaSec;
+
+      // Filter 5: Stationary Drift Rejection (Zero-Speed Filter)
+      // When moving less than 1.8m or speed < 0.4 m/s, reject jitter accumulation
+      const isStationary = stepDistance < 1.8 && (speed === null || speed < 0.4 || computedSpeed < 0.4);
+
+      if (!isStationary) {
+        // Accumulate truthful distance
+        this.metrics.distanceMeters += stepDistance;
+
+        if (computedSpeed >= activityConfig.minValidSpeedMps) {
+          this.metrics.movingSeconds += timeDeltaSec;
+        }
       }
     }
 
+    // Add point to master array
     this.points.push(newPoint);
+
+    // Keep sliding window of last 6 points for smooth rolling pace
+    this.recentPointsWindow.push(newPoint);
+    if (this.recentPointsWindow.length > 6) {
+      this.recentPointsWindow.shift();
+    }
+
+    // Smooth instantaneous speed with Exponential Moving Average (EMA)
+    const rawSpeed = speed !== null && speed >= 0 ? speed : 0;
+    if (this.smoothedSpeedMps === 0) {
+      this.smoothedSpeedMps = rawSpeed;
+    } else {
+      const alpha = 0.3; // 30% new measurement, 70% history
+      this.smoothedSpeedMps = alpha * rawSpeed + (1 - alpha) * this.smoothedSpeedMps;
+    }
+
     this.metrics.pointsCount = this.points.length;
     this.metrics.currentAltitudeMeters = altitude ?? undefined;
     this.metrics.currentAccuracyMeters = accuracy ?? undefined;
-    this.metrics.currentSpeedMps = speed !== null && speed >= 0 ? speed : 0;
+    this.metrics.currentSpeedMps = Math.max(0, +this.smoothedSpeedMps.toFixed(2));
 
-    // Elevation Gain
+    // Elevation Gain (filters vertical sensor noise)
     const altitudes = this.points
       .map((p) => p.altitude)
       .filter((a): a is number => typeof a === 'number');
     this.metrics.elevationGainMeters = calculateElevationGain(altitudes);
 
-    // Pace & Speed
+    // Pace & Speed calculation
     if (this.metrics.distanceMeters > 10) {
       this.metrics.averagePaceSecKm = calculatePace(
         this.metrics.distanceMeters,
         this.metrics.elapsedSeconds
       );
-      this.metrics.averageSpeedMps =
-        this.metrics.distanceMeters / Math.max(1, this.metrics.elapsedSeconds);
+      this.metrics.averageSpeedMps = +(
+        this.metrics.distanceMeters / Math.max(1, this.metrics.elapsedSeconds)
+      ).toFixed(2);
 
-      if (this.metrics.currentSpeedMps > 0.5) {
-        this.metrics.currentPaceSecKm = Math.round(1000 / this.metrics.currentSpeedMps);
+      // Compute rolling window pace for smooth, truthful real-time feedback
+      if (this.recentPointsWindow.length >= 3) {
+        const firstWinPoint = this.recentPointsWindow[0];
+        const lastWinPoint = this.recentPointsWindow[this.recentPointsWindow.length - 1];
+        const winDistance = haversineDistance(
+          firstWinPoint.latitude,
+          firstWinPoint.longitude,
+          lastWinPoint.latitude,
+          lastWinPoint.longitude
+        );
+        const winTimeSec = (lastWinPoint.timestamp - firstWinPoint.timestamp) / 1000;
+
+        if (winDistance > 5 && winTimeSec > 1) {
+          this.metrics.currentPaceSecKm = calculatePace(winDistance, winTimeSec);
+        } else if (this.smoothedSpeedMps > 0.5) {
+          this.metrics.currentPaceSecKm = Math.round(1000 / this.smoothedSpeedMps);
+        } else {
+          this.metrics.currentPaceSecKm = this.metrics.averagePaceSecKm;
+        }
+      } else if (this.smoothedSpeedMps > 0.5) {
+        this.metrics.currentPaceSecKm = Math.round(1000 / this.smoothedSpeedMps);
       } else {
         this.metrics.currentPaceSecKm = this.metrics.averagePaceSecKm;
       }
@@ -294,39 +346,38 @@ class GPSTrackingEngine {
 
   private async startLocationTracking() {
     if (Platform.OS === 'web') {
-      // Polyfill GPS simulation on web preview if native hardware not accessible
       return;
     }
 
     try {
       const config = ACTIVITY_DEFINITIONS[this.activityType];
-      const accuracy =
-        config.gpsProfile === 'high'
-          ? Location.Accuracy.BestForNavigation
-          : Location.Accuracy.Balanced;
+      // Highest accuracy navigation profile
+      const accuracy = Location.Accuracy.BestForNavigation;
 
       this.foregroundSubscription = await Location.watchPositionAsync(
         {
           accuracy,
-          timeInterval: 1500,
-          distanceInterval: 3,
+          timeInterval: 1000,
+          distanceInterval: 1,
+          mayShowUserSettingsDialog: true,
         },
         (loc) => this.handleNewLocation(loc)
       );
 
-      // Start background task if registered
+      // Start background location updates if task defined
       const isTaskDefined = TaskManager.isTaskDefined(GPS_BACKGROUND_TASK_NAME);
       if (isTaskDefined) {
         await Location.startLocationUpdatesAsync(GPS_BACKGROUND_TASK_NAME, {
           accuracy,
-          timeInterval: 2000,
-          distanceInterval: 4,
+          timeInterval: 1000,
+          distanceInterval: 2,
           foregroundService: {
             notificationTitle: `LifeOS · Tracking ${config.label}`,
-            notificationBody: 'Recording route and endurance metrics...',
+            notificationBody: 'High-precision route and endurance recording...',
             notificationColor: '#1B3B2B',
           },
           showsBackgroundLocationIndicator: true,
+          pausesUpdatesAutomatically: false,
         });
       }
     } catch (err) {

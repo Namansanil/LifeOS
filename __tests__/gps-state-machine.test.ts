@@ -94,13 +94,13 @@ describe('GPS Tracking State Machine & Filtering', () => {
     });
     expect(gpsEngine.getPoints().length).toBe(1);
 
-    // 4. Valid second point
+    // 4. Valid second point (genuine movement > 10m)
     gpsEngine.handleNewLocation({
       coords: {
         latitude: 12.9718,
         longitude: 77.5948,
         altitude: 921,
-        accuracy: 8,
+        accuracy: 5,
         speed: 3.4,
         heading: 0,
         altitudeAccuracy: null,
@@ -109,5 +109,41 @@ describe('GPS Tracking State Machine & Filtering', () => {
     });
     expect(gpsEngine.getPoints().length).toBe(2);
     expect(gpsEngine.getMetrics().distanceMeters).toBeGreaterThan(0);
+  });
+
+  it('rejects stationary drift jitter when not moving', async () => {
+    await gpsEngine.prepare('RUN');
+    await gpsEngine.start();
+
+    // Initial point
+    gpsEngine.handleNewLocation({
+      coords: {
+        latitude: 12.971600,
+        longitude: 77.594600,
+        altitude: 920,
+        accuracy: 12,
+        speed: 0.1,
+        heading: 0,
+        altitudeAccuracy: null,
+      },
+      timestamp: 1000,
+    });
+
+    // Tiny 0.5m drift jitter while sitting still
+    gpsEngine.handleNewLocation({
+      coords: {
+        latitude: 12.971604,
+        longitude: 77.594602,
+        altitude: 920,
+        accuracy: 14,
+        speed: 0.1,
+        heading: 0,
+        altitudeAccuracy: null,
+      },
+      timestamp: 2000,
+    });
+
+    // Should NOT accumulate distance during stationary jitter
+    expect(gpsEngine.getMetrics().distanceMeters).toBe(0);
   });
 });
