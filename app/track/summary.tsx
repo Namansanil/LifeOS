@@ -129,11 +129,11 @@ export default function ActivitySummaryScreen() {
               <Text style={[Typography.headingLarge, { color: theme.textPrimary, marginTop: 2 }]}>
                 {meta.primaryMetric === 'SPEED' ? `${speedKmh} km/h` : paceFormatted}
               </Text>
-              {meta.primaryMetric !== 'SPEED' && metrics.bestPaceSecKm && (
+              {meta.primaryMetric !== 'SPEED' && Boolean(metrics.bestPaceSecKm) ? (
                 <Text style={[Typography.caption, { color: theme.textMuted }]}>
                   Best {bestPaceFormatted}
                 </Text>
-              )}
+              ) : null}
             </View>
           </View>
 

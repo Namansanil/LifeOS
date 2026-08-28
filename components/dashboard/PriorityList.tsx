@@ -14,6 +14,7 @@ import { DailyPriority, LifePillar } from '@/types';
 import { Check, Plus, Edit3, X } from 'lucide-react-native';
 import { haptics } from '@/services/haptics';
 import { Button } from '@/components/common/Button';
+import { generateUUID } from '@/services/uuid';
 
 interface PriorityListProps {
   priorities: DailyPriority[];
@@ -22,7 +23,7 @@ interface PriorityListProps {
 }
 
 export const PriorityList: React.FC<PriorityListProps> = ({
-  priorities,
+  priorities = [],
   onToggle,
   onSavePriorities,
 }) => {
@@ -30,7 +31,7 @@ export const PriorityList: React.FC<PriorityListProps> = ({
   const [modalVisible, setModalVisible] = useState(false);
   const [editingTitles, setEditingTitles] = useState<string[]>(['', '', '']);
 
-  const openEditor = () => {
+  const handleOpenEditModal = () => {
     setEditingTitles([
       priorities[0]?.title || '',
       priorities[1]?.title || '',
@@ -43,7 +44,7 @@ export const PriorityList: React.FC<PriorityListProps> = ({
     const today = new Date().toISOString().split('T')[0];
     const updated: DailyPriority[] = editingTitles
       .map((title, idx) => ({
-        id: priorities[idx]?.id || `p_${today}_${idx + 1}`,
+        id: priorities[idx]?.id || generateUUID(),
         user_id: priorities[idx]?.user_id || 'demo-user-naman',
         date: today,
         order_index: idx + 1,
@@ -66,7 +67,7 @@ export const PriorityList: React.FC<PriorityListProps> = ({
         <Pressable
           onPress={async () => {
             await haptics.selection();
-            openEditor();
+            handleOpenEditModal();
           }}
           style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1, padding: 4 }]}
         >

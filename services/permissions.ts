@@ -18,17 +18,31 @@ export async function checkAllPermissions(): Promise<PermissionsStatus> {
   }
 
   try {
-    const fg = await Location.getForegroundPermissionsAsync();
-    const bg = await Location.getBackgroundPermissionsAsync();
-    const notif = await Notifications.getPermissionsAsync();
+    let fgGranted = false;
+    let bgGranted = false;
+    let notifGranted = false;
+
+    try {
+      const fg = await Location.getForegroundPermissionsAsync();
+      fgGranted = fg.status === 'granted';
+    } catch {}
+
+    try {
+      const bg = await Location.getBackgroundPermissionsAsync();
+      bgGranted = bg.status === 'granted';
+    } catch {}
+
+    try {
+      const notif = await Notifications.getPermissionsAsync();
+      notifGranted = notif.status === 'granted';
+    } catch {}
 
     return {
-      foregroundLocation: fg.status === 'granted',
-      backgroundLocation: bg.status === 'granted',
-      notifications: notif.status === 'granted',
+      foregroundLocation: fgGranted,
+      backgroundLocation: bgGranted,
+      notifications: notifGranted,
     };
   } catch (err) {
-    console.warn('Error checking permissions:', err);
     return {
       foregroundLocation: false,
       backgroundLocation: false,

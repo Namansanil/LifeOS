@@ -30,6 +30,7 @@ import {
   calculateReadiness,
   calculateStreak,
 } from '@/services/calculations';
+import { generateUUID } from '@/services/uuid';
 
 interface AppDataContextValue {
   todayDate: string;
@@ -458,7 +459,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (tomorrowPriorities && tomorrowPriorities.length > 0) {
       const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
       const tomorrowItems: DailyPriority[] = tomorrowPriorities.map((title, idx) => ({
-        id: `p_${tomorrow}_${idx + 1}`,
+        id: generateUUID(),
         user_id: userId,
         date: tomorrow,
         order_index: idx + 1,
