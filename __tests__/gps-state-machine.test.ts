@@ -267,6 +267,7 @@ describe('GPS Tracking State Machine & Production Filtering', () => {
     expect(processed.elapsedSeconds).toBe(14);
     expect(processed.movingSeconds).toBeGreaterThan(0);
     expect(processed.processedRoute.length).toBeGreaterThan(0);
+    expect(processed.displayRoute.length).toBeGreaterThan(0);
     expect(processed.gpsQuality).toBe('EXCELLENT');
   });
 });
