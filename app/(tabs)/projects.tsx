@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '@/context/ThemeContext';
+import { useAuth } from '@/context/AuthContext';
 import { useProjects } from '@/hooks/useProjects';
 import { Typography } from '@/constants/typography';
 import { Spacing, BorderRadius, Shadows } from '@/constants/spacing';
@@ -30,6 +31,7 @@ import { haptics } from '@/services/haptics';
 
 export default function ProjectsScreen() {
   const { theme, isDark } = useTheme();
+  const { user } = useAuth();
   const {
     projects,
     activeProjects,
@@ -49,7 +51,7 @@ export default function ProjectsScreen() {
 
     const newProj: Project = {
       id: `proj_${Date.now()}`,
-      user_id: 'demo-user-naman',
+      user_id: user?.id || '',
       name: newProjectName.trim(),
       description: newProjectDesc.trim(),
       status: 'ACTIVE',

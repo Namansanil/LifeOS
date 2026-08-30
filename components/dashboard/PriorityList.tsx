@@ -8,12 +8,14 @@ import {
   Modal,
 } from 'react-native';
 import { useTheme } from '@/context/ThemeContext';
+import { useAuth } from '@/context/AuthContext';
 import { Typography } from '@/constants/typography';
 import { Spacing, BorderRadius, Shadows } from '@/constants/spacing';
 import { DailyPriority, LifePillar } from '@/types';
 import { Check, Plus, Edit3, X } from 'lucide-react-native';
 import { haptics } from '@/services/haptics';
 import { Button } from '@/components/common/Button';
+import { generateUUID } from '@/services/uuid';
 
 interface PriorityListProps {
   priorities: DailyPriority[];
@@ -22,15 +24,16 @@ interface PriorityListProps {
 }
 
 export const PriorityList: React.FC<PriorityListProps> = ({
-  priorities,
+  priorities = [],
   onToggle,
   onSavePriorities,
 }) => {
   const { theme, isDark } = useTheme();
+  const { user } = useAuth();
   const [modalVisible, setModalVisible] = useState(false);
   const [editingTitles, setEditingTitles] = useState<string[]>(['', '', '']);
 
-  const openEditor = () => {
+  const handleOpenEditModal = () => {
     setEditingTitles([
       priorities[0]?.title || '',
       priorities[1]?.title || '',
@@ -41,10 +44,11 @@ export const PriorityList: React.FC<PriorityListProps> = ({
 
   const handleSaveModal = () => {
     const today = new Date().toISOString().split('T')[0];
+    const userId = user?.id || '';
     const updated: DailyPriority[] = editingTitles
       .map((title, idx) => ({
-        id: priorities[idx]?.id || `p_${today}_${idx + 1}`,
-        user_id: priorities[idx]?.user_id || 'demo-user-naman',
+        id: priorities[idx]?.id || generateUUID(),
+        user_id: priorities[idx]?.user_id || userId,
         date: today,
         order_index: idx + 1,
         title: title.trim() || `Priority 0${idx + 1}`,
@@ -66,38 +70,60 @@ export const PriorityList: React.FC<PriorityListProps> = ({
         <Pressable
           onPress={async () => {
             await haptics.selection();
-            openEditor();
+            handleOpenEditModal();
           }}
           style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1, padding: 4 }]}
         >
           <Text style={[Typography.eyebrowSmall, { color: theme.primary }]}>
-            EDIT TOP 3
+            {priorities.length === 0 ? '+ SET TOP 3' : 'EDIT TOP 3'}
           </Text>
         </Pressable>
       </View>
 
-      <View style={styles.list}>
-        {priorities.map((item, index) => {
-          const numberStr = `0${index + 1}`;
-          const isDone = item.completed;
+      {priorities.length === 0 ? (
+        <Pressable
+          onPress={async () => {
+            await haptics.selection();
+            handleOpenEditModal();
+          }}
+          style={({ pressed }) => [
+            styles.emptyPrompt,
+            {
+              backgroundColor: theme.surface,
+              borderColor: theme.border,
+              opacity: pressed ? 0.85 : 1,
+            },
+            Shadows.subtle,
+          ]}
+        >
+          <Plus size={16} color={theme.primary} />
+          <Text style={[Typography.labelBold, { color: theme.primary, marginLeft: Spacing.sm }]}>
+            Define Today's 3 Key Objectives
+          </Text>
+        </Pressable>
+      ) : (
+        <View style={styles.list}>
+          {priorities.map((item, index) => {
+            const numberStr = `0${index + 1}`;
+            const isDone = item.completed;
 
-          return (
-            <Pressable
-              key={item.id || index}
-              onPress={async () => {
-                await haptics.light();
-                onToggle(item.id);
-              }}
-              style={({ pressed }) => [
-                styles.itemRow,
-                {
-                  backgroundColor: theme.surface,
-                  borderColor: isDone ? theme.primary : theme.border,
-                  opacity: pressed ? 0.9 : 1,
-                },
-                Shadows.subtle,
-              ]}
-            >
+            return (
+              <Pressable
+                key={item.id || index}
+                onPress={async () => {
+                  await haptics.light();
+                  onToggle(item.id);
+                }}
+                style={({ pressed }) => [
+                  styles.itemRow,
+                  {
+                    backgroundColor: theme.surface,
+                    borderColor: isDone ? theme.primary : theme.border,
+                    opacity: pressed ? 0.9 : 1,
+                  },
+                  Shadows.subtle,
+                ]}
+              >
               {/* Order index pill */}
               <View
                 style={[
@@ -153,6 +179,7 @@ export const PriorityList: React.FC<PriorityListProps> = ({
           );
         })}
       </View>
+      )}
 
       {/* Modal for editing Top 3 priorities */}
       <Modal visible={modalVisible} transparent animationType="slide">
@@ -231,6 +258,15 @@ const styles = StyleSheet.create({
   },
   list: {
     gap: Spacing.sm,
+  },
+  emptyPrompt: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderStyle: 'dashed',
   },
   itemRow: {
     flexDirection: 'row',

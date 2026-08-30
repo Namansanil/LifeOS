@@ -10,6 +10,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/context/ThemeContext';
+import { useAuth } from '@/context/AuthContext';
 import { useTracking } from '@/hooks/useTracking';
 import { useAppData } from '@/context/AppDataContext';
 import { Typography } from '@/constants/typography';
@@ -24,6 +25,7 @@ import { haptics } from '@/services/haptics';
 export default function ActivitySummaryScreen() {
   const { theme, isDark } = useTheme();
   const router = useRouter();
+  const { user } = useAuth();
   const { metrics, activityType, points, rawPoints, splits, reset } = useTracking();
   const { saveNewActivity } = useAppData();
 
@@ -45,7 +47,7 @@ export default function ActivitySummaryScreen() {
     await haptics.success();
     const newActivity: Activity = {
       id: `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      user_id: '',
+      user_id: user?.id || '',
       type: activityType,
       category: meta.category,
       title: title.trim() || `${meta.label} Session`,
@@ -56,10 +58,14 @@ export default function ActivitySummaryScreen() {
       moving_time: metrics.movingSeconds || metrics.elapsedSeconds,
       elevation_gain: metrics.elevationGainMeters,
       elevation_loss: metrics.elevationLossMeters,
+      elevation_source: metrics.elevationSource,
+      elevation_corrected: metrics.isElevationCorrected,
       average_speed: metrics.averageSpeedMps,
       max_speed: metrics.maxSpeedMps,
       average_pace: metrics.averagePaceSecKm,
       best_pace: metrics.bestPaceSecKm,
+      average_gap: metrics.averageGapSecKm,
+      gap_distance: metrics.gapDistanceMeters,
       calories: Math.round((metrics.distanceMeters / 1000) * 65),
       source: 'GPS',
       visibility,
@@ -129,11 +135,15 @@ export default function ActivitySummaryScreen() {
               <Text style={[Typography.headingLarge, { color: theme.textPrimary, marginTop: 2 }]}>
                 {meta.primaryMetric === 'SPEED' ? `${speedKmh} km/h` : paceFormatted}
               </Text>
-              {meta.primaryMetric !== 'SPEED' && metrics.bestPaceSecKm && (
+              {activityType === 'RUN' && metrics.averageGapSecKm ? (
+                <Text style={[Typography.caption, { color: theme.primary, fontWeight: '700' }]}>
+                  GAP {formatPace(metrics.averageGapSecKm)}
+                </Text>
+              ) : meta.primaryMetric !== 'SPEED' && Boolean(metrics.bestPaceSecKm) ? (
                 <Text style={[Typography.caption, { color: theme.textMuted }]}>
                   Best {bestPaceFormatted}
                 </Text>
-              )}
+              ) : null}
             </View>
           </View>
 
@@ -142,7 +152,7 @@ export default function ActivitySummaryScreen() {
           <View style={styles.metricRow}>
             <View style={styles.metricItem}>
               <Text style={[Typography.eyebrowSmall, { color: theme.textMuted }]}>
-                ELEVATION GAIN
+                ELEVATION GAIN {metrics.elevationSource ? `(${metrics.elevationSource})` : ''}
               </Text>
               <Text style={[Typography.headingMedium, { color: theme.textPrimary, marginTop: 2 }]}>
                 +{Math.round(metrics.elevationGainMeters)}m
@@ -176,7 +186,9 @@ export default function ActivitySummaryScreen() {
             </Text>
             <View style={styles.splitHeaderRow}>
               <Text style={[styles.splitColHeader, { color: theme.textMuted }]}>SPLIT</Text>
-              <Text style={[styles.splitColHeader, { color: theme.textMuted }]}>PACE</Text>
+              <Text style={[styles.splitColHeader, { color: theme.textMuted }]}>
+                {activityType === 'RUN' ? 'PACE / GAP' : 'PACE'}
+              </Text>
               <Text style={[styles.splitColHeader, { color: theme.textMuted }]}>TIME</Text>
               <Text style={[styles.splitColHeader, { color: theme.textMuted }]}>ELEV</Text>
             </View>
@@ -185,9 +197,16 @@ export default function ActivitySummaryScreen() {
                 <Text style={[Typography.bodyMedium, { color: theme.textPrimary, fontWeight: '700' }]}>
                   {s.splitNumber} {meta.primaryMetric === 'SPEED' ? ' (5km)' : ' (1km)'}
                 </Text>
-                <Text style={[Typography.bodyMedium, { color: theme.textPrimary }]}>
-                  {meta.primaryMetric === 'SPEED' ? `${s.speedKmh} km/h` : formatPace(s.paceSecKm)}
-                </Text>
+                <View>
+                  <Text style={[Typography.bodyMedium, { color: theme.textPrimary }]}>
+                    {meta.primaryMetric === 'SPEED' ? `${s.speedKmh} km/h` : formatPace(s.paceSecKm)}
+                  </Text>
+                  {activityType === 'RUN' && s.gapSecKm && s.gapSecKm !== s.paceSecKm ? (
+                    <Text style={[Typography.caption, { color: theme.primary, fontWeight: '600' }]}>
+                      GAP {formatPace(s.gapSecKm)}
+                    </Text>
+                  ) : null}
+                </View>
                 <Text style={[Typography.bodyMedium, { color: theme.textSecondary }]}>
                   {formatDuration(s.movingSeconds || s.durationSeconds)}
                 </Text>

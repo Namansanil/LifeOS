@@ -10,6 +10,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/context/ThemeContext';
+import { useAuth } from '@/context/AuthContext';
 import { useSurf } from '@/hooks/useSurf';
 import { Typography } from '@/constants/typography';
 import { Spacing, BorderRadius, Shadows } from '@/constants/spacing';
@@ -21,13 +22,14 @@ import { haptics } from '@/services/haptics';
 export default function LogSurfSessionScreen() {
   const { theme, isDark } = useTheme();
   const router = useRouter();
+  const { user } = useAuth();
   const { saveNewSurfSession } = useSurf();
 
-  const [locationName, setLocationName] = useState('North Point Reef');
-  const [durationMinutes, setDurationMinutes] = useState('90');
-  const [waveQuality, setWaveQuality] = useState(4);
-  const [energyLevel, setEnergyLevel] = useState(8);
-  const [boardUsed, setBoardUsed] = useState('6’0 Shortboard');
+  const [locationName, setLocationName] = useState('');
+  const [durationMinutes, setDurationMinutes] = useState('60');
+  const [waveQuality, setWaveQuality] = useState(3);
+  const [energyLevel, setEnergyLevel] = useState(7);
+  const [boardUsed, setBoardUsed] = useState('');
   const [rating, setRating] = useState(4);
   const [notes, setNotes] = useState('');
 
@@ -36,7 +38,7 @@ export default function LogSurfSessionScreen() {
     const durSec = (parseInt(durationMinutes, 10) || 60) * 60;
     const session: SurfSession = {
       id: `surf_${Date.now()}`,
-      user_id: 'demo-user-naman',
+      user_id: user?.id || '',
       location_name: locationName.trim() || 'Ocean Spot',
       session_type: 'FUN',
       started_at: new Date(Date.now() - durSec * 1000).toISOString(),

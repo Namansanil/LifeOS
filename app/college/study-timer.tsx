@@ -10,6 +10,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/context/ThemeContext';
+import { useAuth } from '@/context/AuthContext';
 import { useCollege } from '@/hooks/useCollege';
 import { Typography } from '@/constants/typography';
 import { Spacing, BorderRadius, Shadows } from '@/constants/spacing';
@@ -22,10 +23,11 @@ import { haptics } from '@/services/haptics';
 export default function StudyTimerScreen() {
   const { theme, isDark } = useTheme();
   const router = useRouter();
+  const { user } = useAuth();
   const { subjects, saveNewStudySession } = useCollege();
 
   const [selectedSubjectId, setSelectedSubjectId] = useState<string>(
-    subjects[0]?.id || 'sub_dbms'
+    subjects[0]?.id || ''
   );
   const [sessionTopic, setSessionTopic] = useState('');
   const [seconds, setSeconds] = useState(0);
@@ -59,8 +61,8 @@ export default function StudyTimerScreen() {
 
     const studySession: StudySession = {
       id: `study_${Date.now()}`,
-      user_id: 'demo-user-naman',
-      subject_id: selectedSubjectId,
+      user_id: user?.id || '',
+      subject_id: selectedSubjectId || 'general',
       title: sessionTopic.trim() || 'Deep Study Session',
       duration: Math.max(60, seconds), // at least 1 minute
       started_at: new Date(Date.now() - seconds * 1000).toISOString(),

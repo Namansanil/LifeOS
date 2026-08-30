@@ -27,6 +27,7 @@ class LocalDatabase {
     try {
       this.db = await SQLite.openDatabaseAsync('lifeos.db');
       await this.setupTables();
+      await this.runMigrations();
     } catch (err) {
       console.warn('SQLite native init warning, fallback to storage:', err);
     }
@@ -73,9 +74,14 @@ class LocalDatabase {
         duration INTEGER NOT NULL,
         distance REAL NOT NULL,
         moving_time INTEGER NOT NULL,
-        elevation_gain REAL NOT NULL,
-        average_speed REAL NOT NULL,
-        average_pace REAL NOT NULL,
+        elevation_gain REAL NOT NULL DEFAULT 0,
+        elevation_loss REAL,
+        average_speed REAL NOT NULL DEFAULT 0,
+        max_speed REAL,
+        average_pace REAL NOT NULL DEFAULT 0,
+        best_pace REAL,
+        gps_quality TEXT,
+        splits_json TEXT,
         calories INTEGER,
         source TEXT NOT NULL,
         visibility TEXT NOT NULL,
@@ -186,15 +192,15 @@ class LocalDatabase {
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
         date TEXT NOT NULL UNIQUE,
-        life_score INTEGER NOT NULL,
-        readiness_score INTEGER NOT NULL,
-        readiness_label TEXT NOT NULL,
-        completed_habits_count INTEGER NOT NULL,
-        total_habits_count INTEGER NOT NULL,
-        active_duration_minutes INTEGER NOT NULL,
-        study_duration_minutes INTEGER NOT NULL,
-        project_duration_minutes INTEGER NOT NULL,
-        review_completed INTEGER NOT NULL,
+        life_score INTEGER,
+        readiness_score INTEGER,
+        readiness_label TEXT NOT NULL DEFAULT 'INSUFFICIENT_DATA',
+        completed_habits_count INTEGER NOT NULL DEFAULT 0,
+        total_habits_count INTEGER NOT NULL DEFAULT 0,
+        active_duration_minutes INTEGER NOT NULL DEFAULT 0,
+        study_duration_minutes INTEGER NOT NULL DEFAULT 0,
+        project_duration_minutes INTEGER NOT NULL DEFAULT 0,
+        review_completed INTEGER NOT NULL DEFAULT 0,
         journal_entry TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -228,6 +234,30 @@ class LocalDatabase {
         last_error TEXT
       );
     `);
+  }
+
+  /**
+   * Safely adds new columns to existing tables via ALTER TABLE.
+   * SQLite does not support ADD COLUMN IF NOT EXISTS, so we try/catch each one.
+   * This is safe to run on every app start — it's a no-op when columns already exist.
+   */
+  private async runMigrations() {
+    if (!this.db) return;
+    const alterStatements = [
+      // Activities: new GPS metrics columns
+      `ALTER TABLE activities ADD COLUMN elevation_loss REAL`,
+      `ALTER TABLE activities ADD COLUMN max_speed REAL`,
+      `ALTER TABLE activities ADD COLUMN best_pace REAL`,
+      `ALTER TABLE activities ADD COLUMN gps_quality TEXT`,
+      `ALTER TABLE activities ADD COLUMN splits_json TEXT`,
+    ];
+    for (const sql of alterStatements) {
+      try {
+        await this.db.execAsync(sql);
+      } catch {
+        // Column already exists — safe to ignore
+      }
+    }
   }
 
   // Fallback storage
@@ -389,7 +419,10 @@ class LocalDatabase {
         `SELECT * FROM activities WHERE user_id = ? ORDER BY started_at DESC`,
         [userId]
       );
-      return rows;
+      return rows.map((r: any) => ({
+        ...r,
+        splits: r.splits_json ? JSON.parse(r.splits_json) : undefined,
+      }));
     }
     const all = await this.getStorageItem<Activity[]>('activities', []);
     return all.filter((a) => a.user_id === userId).sort((a, b) => (b.started_at > a.started_at ? 1 : -1));
@@ -399,8 +432,16 @@ class LocalDatabase {
     await this.init();
     if (this.db) {
       await this.db.runAsync(
-        `INSERT OR REPLACE INTO activities (id, user_id, type, category, title, started_at, ended_at, duration, distance, moving_time, elevation_gain, average_speed, average_pace, calories, source, visibility, notes, rating, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO activities (
+          id, user_id, type, category, title, started_at, ended_at,
+          duration, distance, moving_time,
+          elevation_gain, elevation_loss,
+          average_speed, max_speed,
+          average_pace, best_pace,
+          gps_quality, splits_json,
+          calories, source, visibility, notes, rating,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           activity.id,
           activity.user_id,
@@ -413,8 +454,13 @@ class LocalDatabase {
           activity.distance,
           activity.moving_time,
           activity.elevation_gain,
+          activity.elevation_loss ?? null,
           activity.average_speed,
+          activity.max_speed ?? null,
           activity.average_pace,
+          activity.best_pace ?? null,
+          activity.gps_quality ?? null,
+          activity.splits ? JSON.stringify(activity.splits) : null,
           activity.calories || null,
           activity.source,
           activity.visibility,
@@ -435,9 +481,9 @@ class LocalDatabase {
               activity.id,
               pt.latitude,
               pt.longitude,
-              pt.altitude || null,
-              pt.accuracy || null,
-              pt.speed || null,
+              pt.altitude ?? null,
+              pt.accuracy ?? null,
+              pt.speed ?? null,
               pt.timestamp,
             ]
           );

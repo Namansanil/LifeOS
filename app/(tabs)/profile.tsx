@@ -26,7 +26,8 @@ import {
   Download,
   LogOut,
   ChevronRight,
-  Sparkles,
+  CheckCircle2,
+  Lock,
 } from 'lucide-react-native';
 import { haptics } from '@/services/haptics';
 import { PILLAR_METADATA } from '@/constants/activity';
@@ -35,8 +36,7 @@ import { db } from '@/services/database';
 
 export default function ProfileScreen() {
   const { theme, isDark, themeMode, setThemeMode } = useTheme();
-  const { user, logout, updateEnabledPillars, updatePreferences, loginDemoUser } =
-    useAuth();
+  const { user, logout, updateEnabledPillars, updatePreferences } = useAuth();
   const router = useRouter();
 
   const enabledPillars = user?.enabled_pillars || {
@@ -276,28 +276,6 @@ export default function ProfileScreen() {
               </Text>
               <ChevronRight size={16} color={theme.textMuted} />
             </Pressable>
-
-            <Pressable
-              onPress={async () => {
-                await haptics.medium();
-                await loginDemoUser();
-                Alert.alert('Demo Seed Restored', 'Development seed data refreshed.');
-              }}
-              style={({ pressed }) => [
-                styles.actionRow,
-                {
-                  borderTopWidth: 1,
-                  borderTopColor: theme.borderLight,
-                  opacity: pressed ? 0.75 : 1,
-                },
-              ]}
-            >
-              <Sparkles size={18} color={theme.primary} />
-              <Text style={[Typography.labelBold, { color: theme.primary, marginLeft: Spacing.md, flex: 1 }]}>
-                Restore Development Seed Data
-              </Text>
-              <ChevronRight size={16} color={theme.textMuted} />
-            </Pressable>
           </View>
         </View>
 
@@ -307,7 +285,11 @@ export default function ProfileScreen() {
             title="Sign Out"
             variant="outline"
             icon={<LogOut size={16} color={theme.textPrimary} />}
-            onPress={logout}
+            onPress={async () => {
+              await haptics.medium();
+              await logout();
+              router.replace('/(auth)/login');
+            }}
           />
         </View>
       </ScrollView>

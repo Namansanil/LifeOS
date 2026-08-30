@@ -5,6 +5,8 @@ import {
   ActivitySplit,
   ActivityType,
   GPSQuality,
+  MovementState,
+  PredictedMapPosition,
   RawGPSPoint,
   RoutePoint,
   TrackingMetrics,
@@ -42,6 +44,10 @@ export function useTracking() {
     return () => {
       unsubscribe();
     };
+  }, []);
+
+  const getLiveMapPosition = useCallback((now?: number): PredictedMapPosition => {
+    return gpsEngine.getLiveMapPosition(now);
   }, []);
 
   const prepare = useCallback(async (type: ActivityType) => {
@@ -86,6 +92,8 @@ export function useTracking() {
     splits,
     activityType,
     gpsQuality: metrics.gpsQuality,
+    movementState: metrics.movementState || 'MOVING',
+    getLiveMapPosition,
     prepare,
     start,
     pause,

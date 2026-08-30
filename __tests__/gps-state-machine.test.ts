@@ -1,6 +1,7 @@
 jest.mock('expo-location', () => ({
   Accuracy: { BestForNavigation: 6, Balanced: 3 },
   watchPositionAsync: jest.fn().mockResolvedValue({ remove: jest.fn() }),
+  requestForegroundPermissionsAsync: jest.fn().mockResolvedValue({ status: 'granted' }),
   startLocationUpdatesAsync: jest.fn().mockResolvedValue(undefined),
   stopLocationUpdatesAsync: jest.fn().mockResolvedValue(undefined),
   hasStartedLocationUpdatesAsync: jest.fn().mockResolvedValue(false),
@@ -266,6 +267,400 @@ describe('GPS Tracking State Machine & Production Filtering', () => {
     expect(processed.elapsedSeconds).toBe(14);
     expect(processed.movingSeconds).toBeGreaterThan(0);
     expect(processed.processedRoute.length).toBeGreaterThan(0);
+    expect(processed.displayRoute.length).toBeGreaterThan(0);
     expect(processed.gpsQuality).toBe('EXCELLENT');
+  });
+
+  it('responds quickly to speed changes and immediately zeros out speed upon stopping without lag', async () => {
+    await gpsEngine.prepare('RUN');
+    await gpsEngine.start();
+
+    // Start moving at 4.0 m/s
+    gpsEngine.handleNewLocation({
+      coords: {
+        latitude: 12.97160,
+        longitude: 77.59460,
+        altitude: 920,
+        accuracy: 5,
+        speed: 4.0,
+        heading: 0,
+        altitudeAccuracy: null,
+      },
+      timestamp: 1000,
+    });
+
+    expect(gpsEngine.getMetrics().currentSpeedMps).toBeCloseTo(4.0, 1);
+
+    // Stop moving (speed drops to 0.0)
+    gpsEngine.handleNewLocation({
+      coords: {
+        latitude: 12.97160,
+        longitude: 77.59460,
+        altitude: 920,
+        accuracy: 5,
+        speed: 0.0,
+        heading: 0,
+        altitudeAccuracy: null,
+      },
+      timestamp: 2000,
+    });
+
+    // Speed must zero out immediately upon stopping
+    expect(gpsEngine.getMetrics().currentSpeedMps).toBe(0);
+    expect(gpsEngine.getMetrics().movementState).toBe('STOPPED');
+  });
+
+  it('accumulates elevation gain and loss in real-time during tracking', async () => {
+    await gpsEngine.prepare('HIKE');
+    await gpsEngine.start();
+
+    gpsEngine.handleNewLocation({
+      coords: {
+        latitude: 12.9716,
+        longitude: 77.5946,
+        altitude: 100,
+        accuracy: 5,
+        speed: 1.2,
+        heading: 0,
+        altitudeAccuracy: null,
+      },
+      timestamp: 1000,
+    });
+
+    // Ascend 10 meters over 6 seconds (~2.5 m/s)
+    gpsEngine.handleNewLocation({
+      coords: {
+        latitude: 12.9717,
+        longitude: 77.5947,
+        altitude: 110,
+        accuracy: 5,
+        speed: 1.2,
+        heading: 0,
+        altitudeAccuracy: null,
+      },
+      timestamp: 7000,
+    });
+
+    expect(gpsEngine.getMetrics().elevationGainMeters).toBeGreaterThan(0);
+  });
+
+  describe('Location Quality Gate & Hysteresis Stop Detection', () => {
+    it('handles hysteresis transitions: MOVING -> POSSIBLE_STOP -> STOPPED -> MOVING', async () => {
+      await gpsEngine.prepare('RUN');
+      await gpsEngine.start();
+
+      // 1. Initial point at moving speed
+      gpsEngine.handleNewLocation({
+        coords: {
+          latitude: 12.97160,
+          longitude: 77.59460,
+          altitude: 100,
+          accuracy: 5,
+          speed: 3.5,
+          heading: 90,
+          altitudeAccuracy: null,
+        },
+        timestamp: 1000,
+      });
+      expect(gpsEngine.getMovementState()).toBe('MOVING');
+
+      // 2. Speed drops below stopSpeedMps (0.5 m/s) for 1 tick -> enters POSSIBLE_STOP
+      gpsEngine.handleNewLocation({
+        coords: {
+          latitude: 12.971602,
+          longitude: 77.594602,
+          altitude: 100,
+          accuracy: 6,
+          speed: 0.3,
+          heading: 90,
+          altitudeAccuracy: null,
+        },
+        timestamp: 2000,
+      });
+      expect(gpsEngine.getMovementState()).toBe('POSSIBLE_STOP');
+
+      // 3. Sustained low speed for 2nd tick -> transitions to STOPPED
+      gpsEngine.handleNewLocation({
+        coords: {
+          latitude: 12.971603,
+          longitude: 77.594603,
+          altitude: 100,
+          accuracy: 6,
+          speed: 0.2,
+          heading: 90,
+          altitudeAccuracy: null,
+        },
+        timestamp: 3000,
+      });
+      expect(gpsEngine.getMovementState()).toBe('STOPPED');
+      expect(gpsEngine.getMetrics().currentSpeedMps).toBe(0);
+
+      // 4. Minor noise below resumeSpeedMps (0.8 m/s) stays STOPPED
+      gpsEngine.handleNewLocation({
+        coords: {
+          latitude: 12.971604,
+          longitude: 77.594604,
+          altitude: 100,
+          accuracy: 6,
+          speed: 0.6, // Above stop threshold (0.5), but below resume threshold (0.8)
+          heading: 90,
+          altitudeAccuracy: null,
+        },
+        timestamp: 4000,
+      });
+      expect(gpsEngine.getMovementState()).toBe('STOPPED');
+
+      // 5. Genuine resumption above resumeSpeedMps (0.8 m/s) -> transitions back to MOVING
+      gpsEngine.handleNewLocation({
+        coords: {
+          latitude: 12.971650,
+          longitude: 77.594650,
+          altitude: 100,
+          accuracy: 5,
+          speed: 3.0,
+          heading: 90,
+          altitudeAccuracy: null,
+        },
+        timestamp: 6000,
+      });
+      expect(gpsEngine.getMovementState()).toBe('MOVING');
+      expect(gpsEngine.getMetrics().currentSpeedMps).toBeGreaterThan(0);
+    });
+
+    it('rejects stale timestamps older than 15s', async () => {
+      await gpsEngine.prepare('RUN');
+      await gpsEngine.start();
+
+      gpsEngine.handleNewLocation({
+        coords: {
+          latitude: 12.97160,
+          longitude: 77.59460,
+          altitude: 100,
+          accuracy: 5,
+          speed: 3.0,
+          heading: 0,
+          altitudeAccuracy: null,
+        },
+        timestamp: Date.now() - 30000, // 30 seconds stale
+      });
+
+      expect(gpsEngine.getProcessedPoints().length).toBe(0);
+    });
+
+    it('rejects out-of-order timestamp fixes', async () => {
+      await gpsEngine.prepare('RUN');
+      await gpsEngine.start();
+
+      const now = Date.now();
+      gpsEngine.handleNewLocation({
+        coords: {
+          latitude: 12.97160,
+          longitude: 77.59460,
+          altitude: 100,
+          accuracy: 5,
+          speed: 3.0,
+          heading: 0,
+          altitudeAccuracy: null,
+        },
+        timestamp: now - 2000,
+      });
+      expect(gpsEngine.getProcessedPoints().length).toBe(1);
+
+      // Out of order point (older timestamp)
+      gpsEngine.handleNewLocation({
+        coords: {
+          latitude: 12.97170,
+          longitude: 77.59470,
+          altitude: 100,
+          accuracy: 5,
+          speed: 3.0,
+          heading: 0,
+          altitudeAccuracy: null,
+        },
+        timestamp: now - 4000, // older!
+      });
+      expect(gpsEngine.getProcessedPoints().length).toBe(1);
+    });
+  });
+
+  describe('Dead Reckoning Map Position Prediction & Data Isolation', () => {
+    it('predicts smooth map position within horizon and never contaminates authoritative activity metrics', async () => {
+      await gpsEngine.prepare('RUN');
+      await gpsEngine.start();
+
+      const baseTime = 10000;
+      gpsEngine.handleNewLocation({
+        coords: {
+          latitude: 12.971600,
+          longitude: 77.594600,
+          altitude: 100,
+          accuracy: 5,
+          speed: 3.0, // 3 m/s east
+          heading: 90,
+          altitudeAccuracy: null,
+        },
+        timestamp: baseTime,
+      });
+
+      const initialPointsCount = gpsEngine.getProcessedPoints().length;
+      const initialDistance = gpsEngine.getMetrics().distanceMeters;
+
+      // 1. Get predicted map position 1000ms later
+      const predictedPos = gpsEngine.getLiveMapPosition(baseTime + 1000);
+      expect(predictedPos.isPredicted).toBe(true);
+      expect(predictedPos.longitude).toBeGreaterThan(77.594600);
+
+      // 2. Ensure prediction did NOT alter authoritative recorded activity data!
+      expect(gpsEngine.getProcessedPoints().length).toBe(initialPointsCount);
+      expect(gpsEngine.getMetrics().distanceMeters).toBe(initialDistance);
+      expect(gpsEngine.getMetrics().elevationGainMeters).toBe(0);
+
+      // 3. Stale prediction horizon (>2500ms) halts dead reckoning
+      const stalePredicted = gpsEngine.getLiveMapPosition(baseTime + 5000);
+      expect(stalePredicted.isPredicted).toBe(false);
+      expect(stalePredicted.latitude).toBeCloseTo(12.971600, 5);
+      expect(stalePredicted.longitude).toBeCloseTo(77.594600, 5);
+    });
+  });
+
+  describe('Average Pace & Cumulative Activity Metrics', () => {
+    it('calculates average pace strictly from cumulative moving data during a Run', async () => {
+      await gpsEngine.prepare('RUN');
+      await gpsEngine.start();
+
+      expect(gpsEngine.getMetrics().averagePaceSecKm).toBe(0);
+
+      // Point 1 (0s)
+      gpsEngine.handleNewLocation({
+        coords: {
+          latitude: 12.97160,
+          longitude: 77.59460,
+          altitude: 100,
+          accuracy: 4,
+          speed: 3.33,
+          heading: 0,
+          altitudeAccuracy: null,
+        },
+        timestamp: 10000,
+      });
+
+      // Point 2 (10s later, ~33.3m away)
+      gpsEngine.handleNewLocation({
+        coords: {
+          latitude: 12.97190,
+          longitude: 77.59460,
+          altitude: 100,
+          accuracy: 4,
+          speed: 3.33,
+          heading: 0,
+          altitudeAccuracy: null,
+        },
+        timestamp: 20000,
+      });
+
+      const metrics = gpsEngine.getMetrics();
+      expect(metrics.distanceMeters).toBeGreaterThan(30);
+      expect(metrics.movingSeconds).toBeGreaterThanOrEqual(10);
+      expect(metrics.averagePaceSecKm).toBeGreaterThan(250);
+      expect(metrics.averagePaceSecKm).toBeLessThan(350);
+    });
+
+    it('rejects stationary GPS drift and maintains stable average pace during stopped periods', async () => {
+      await gpsEngine.prepare('RUN');
+      await gpsEngine.start();
+
+      // Fix 1
+      gpsEngine.handleNewLocation({
+        coords: { latitude: 12.97160, longitude: 77.59460, altitude: 100, accuracy: 4, speed: 3.0, heading: 0, altitudeAccuracy: null },
+        timestamp: 10000,
+      });
+      // Fix 2: Genuine movement (30m in 10s)
+      gpsEngine.handleNewLocation({
+        coords: { latitude: 12.97187, longitude: 77.59460, altitude: 100, accuracy: 4, speed: 3.0, heading: 0, altitudeAccuracy: null },
+        timestamp: 20000,
+      });
+
+      const movingDistance = gpsEngine.getMetrics().distanceMeters;
+      const movingTime = gpsEngine.getMetrics().movingSeconds;
+      const avgPaceBeforeStop = gpsEngine.getMetrics().averagePaceSecKm;
+
+      expect(movingDistance).toBeGreaterThan(25);
+      expect(movingTime).toBeGreaterThanOrEqual(10);
+
+      // Fix 3: Stationary jitter / drift (speed 0, tiny delta 0.5m)
+      gpsEngine.handleNewLocation({
+        coords: { latitude: 12.971871, longitude: 77.594601, altitude: 100, accuracy: 4, speed: 0.1, heading: 0, altitudeAccuracy: null },
+        timestamp: 25000,
+      });
+
+      // Distance and moving time must NOT increase from stationary drift!
+      expect(gpsEngine.getMetrics().distanceMeters).toBe(movingDistance);
+      expect(gpsEngine.getMetrics().movingSeconds).toBe(movingTime);
+      expect(gpsEngine.getMetrics().averagePaceSecKm).toBe(avgPaceBeforeStop);
+    });
+
+    it('handles pause and resume without artificial distance or pace spikes', async () => {
+      await gpsEngine.prepare('RUN');
+      await gpsEngine.start();
+
+      // Fix 1
+      gpsEngine.handleNewLocation({
+        coords: { latitude: 12.97160, longitude: 77.59460, altitude: 100, accuracy: 4, speed: 3.0, heading: 0, altitudeAccuracy: null },
+        timestamp: 10000,
+      });
+      // Fix 2 (30m in 10s)
+      gpsEngine.handleNewLocation({
+        coords: { latitude: 12.97187, longitude: 77.59460, altitude: 100, accuracy: 4, speed: 3.0, heading: 0, altitudeAccuracy: null },
+        timestamp: 20000,
+      });
+
+      const distBeforePause = gpsEngine.getMetrics().distanceMeters;
+      const movingTimeBeforePause = gpsEngine.getMetrics().movingSeconds;
+
+      // Pause for 10 minutes (600,000 ms)
+      await gpsEngine.pause();
+      expect(gpsEngine.getState()).toBe('PAUSED');
+
+      // Location arriving during PAUSE must be ignored
+      gpsEngine.handleNewLocation({
+        coords: { latitude: 12.98000, longitude: 77.60000, altitude: 100, accuracy: 4, speed: 0, heading: 0, altitudeAccuracy: null },
+        timestamp: 50000,
+      });
+      expect(gpsEngine.getMetrics().distanceMeters).toBe(distBeforePause);
+
+      // Resume
+      await gpsEngine.resume();
+      expect(gpsEngine.getState()).toBe('TRACKING');
+
+      // First fix after resume should re-anchor without jumping
+      gpsEngine.handleNewLocation({
+        coords: { latitude: 12.98000, longitude: 77.60000, altitude: 100, accuracy: 4, speed: 3.0, heading: 0, altitudeAccuracy: null },
+        timestamp: 620000,
+      });
+
+      // No leap in distance from the gap
+      expect(gpsEngine.getMetrics().distanceMeters).toBe(distBeforePause);
+      expect(gpsEngine.getMetrics().movingSeconds).toBe(movingTimeBeforePause);
+    });
+
+    it('calculates average speed for cycling activities', async () => {
+      await gpsEngine.prepare('CYCLE');
+      await gpsEngine.start();
+
+      // Fix 1
+      gpsEngine.handleNewLocation({
+        coords: { latitude: 12.97160, longitude: 77.59460, altitude: 100, accuracy: 4, speed: 8.0, heading: 0, altitudeAccuracy: null },
+        timestamp: 10000,
+      });
+      // Fix 2: Cycling 80m in 10s = 8 m/s (~28.8 km/h)
+      gpsEngine.handleNewLocation({
+        coords: { latitude: 12.97232, longitude: 77.59460, altitude: 100, accuracy: 4, speed: 8.0, heading: 0, altitudeAccuracy: null },
+        timestamp: 20000,
+      });
+
+      const metrics = gpsEngine.getMetrics();
+      expect(metrics.averageSpeedMps).toBeGreaterThanOrEqual(7.5);
+      expect(metrics.averageSpeedMps).toBeLessThanOrEqual(8.5);
+    });
   });
 });

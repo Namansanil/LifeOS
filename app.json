@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "LifeOS",
-    "slug": "lifeos",
+    "slug": "fitness",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -19,6 +19,8 @@
       "infoPlist": {
         "UIBackgroundModes": [
           "location",
+          "fetch",
+          "location",
           "fetch"
         ],
         "NSLocationWhenInUseUsageDescription": "LifeOS uses your location to track runs, cycling, surf sessions, and walks in real time.",
@@ -33,6 +35,11 @@
         "backgroundColor": "#FAF8F5"
       },
       "package": "com.namanksanil.lifeos",
+      "config": {
+        "googleMaps": {
+          "apiKey": ""
+        }
+      },
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
@@ -62,6 +69,19 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "ee8a91cb-abd8-4ad8-8d0f-09169d6a64c2"
+      }
+    },
+    "owner": "naman-sanils-team",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/ee8a91cb-abd8-4ad8-8d0f-09169d6a64c2"
     }
   }
 }
