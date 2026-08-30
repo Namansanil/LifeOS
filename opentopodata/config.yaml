@@ -1,0 +1,10 @@
+# Open Topo Data Dataset Configuration for LifeOS
+# Backed by Copernicus GLO-30 (~30m resolution Digital Elevation Model)
+
+datasets:
+  copernicus-glo-30:
+    path: data/copernicus-glo-30
+    filename_regex: '.*\.tif$'
+    interpolation: bilinear
+    max_locations_per_request: 100
+    prefilter_locations: true

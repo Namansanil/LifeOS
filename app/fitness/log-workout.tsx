@@ -10,6 +10,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/context/ThemeContext';
+import { useAuth } from '@/context/AuthContext';
 import { useWorkout } from '@/hooks/useWorkout';
 import { Typography } from '@/constants/typography';
 import { Spacing, BorderRadius, Shadows } from '@/constants/spacing';
@@ -21,29 +22,18 @@ import { haptics } from '@/services/haptics';
 export default function LogWorkoutScreen() {
   const { theme, isDark } = useTheme();
   const router = useRouter();
+  const { user } = useAuth();
   const { saveNewWorkout, getStatsForWorkout } = useWorkout();
 
   const [title, setTitle] = useState('Strength Session');
   const [exercises, setExercises] = useState<WorkoutExercise[]>([
     {
-      id: 'ex_1',
+      id: `ex_${Date.now()}`,
       workout_id: '',
-      exercise_name: 'Barbell Back Squat',
+      exercise_name: 'Exercise 1',
       order_index: 0,
       sets: [
-        { set_number: 1, weight_kg: 80, reps: 8, completed: true },
-        { set_number: 2, weight_kg: 95, reps: 6, completed: true },
-        { set_number: 3, weight_kg: 105, reps: 5, completed: false },
-      ],
-    },
-    {
-      id: 'ex_2',
-      workout_id: '',
-      exercise_name: 'Romanian Deadlift',
-      order_index: 1,
-      sets: [
-        { set_number: 1, weight_kg: 70, reps: 10, completed: true },
-        { set_number: 2, weight_kg: 85, reps: 8, completed: false },
+        { set_number: 1, weight_kg: 0, reps: 10, completed: false },
       ],
     },
   ]);
@@ -54,34 +44,44 @@ export default function LogWorkoutScreen() {
       {
         id: `ex_${Date.now()}`,
         workout_id: '',
-        exercise_name: 'New Exercise',
+        exercise_name: `Exercise ${prev.length + 1}`,
         order_index: prev.length,
-        sets: [{ set_number: 1, weight_kg: 60, reps: 10, completed: false }],
+        sets: [{ set_number: 1, weight_kg: 0, reps: 10, completed: false }],
       },
     ]);
+  };
+
+  const removeExercise = (id: string) => {
+    setExercises((prev) => prev.filter((e) => e.id !== id));
   };
 
   const addSet = (exIndex: number) => {
     setExercises((prev) => {
       const copy = [...prev];
-      const ex = copy[exIndex];
-      const lastSet = ex.sets[ex.sets.length - 1];
-      ex.sets.push({
-        set_number: ex.sets.length + 1,
-        weight_kg: lastSet ? lastSet.weight_kg : 60,
-        reps: lastSet ? lastSet.reps : 8,
+      const sets = copy[exIndex].sets;
+      const lastSet = sets[sets.length - 1];
+      sets.push({
+        set_number: sets.length + 1,
+        weight_kg: lastSet ? lastSet.weight_kg : 0,
+        reps: lastSet ? lastSet.reps : 10,
         completed: false,
       });
       return copy;
     });
   };
 
-  const toggleSetComplete = async (exIndex: number, setIndex: number) => {
-    await haptics.light();
+  const removeSet = (exIndex: number, setIndex: number) => {
     setExercises((prev) => {
       const copy = [...prev];
-      const s = copy[exIndex].sets[setIndex];
-      s.completed = !s.completed;
+      copy[exIndex].sets.splice(setIndex, 1);
+      return copy;
+    });
+  };
+
+  const toggleSetComplete = (exIndex: number, setIndex: number) => {
+    setExercises((prev) => {
+      const copy = [...prev];
+      copy[exIndex].sets[setIndex].completed = !copy[exIndex].sets[setIndex].completed;
       return copy;
     });
   };
@@ -105,7 +105,7 @@ export default function LogWorkoutScreen() {
     await haptics.success();
     const tempWorkout: Workout = {
       id: `w_${Date.now()}`,
-      user_id: 'demo-user-naman',
+      user_id: user?.id || '',
       title: title.trim() || 'Strength Workout',
       type: 'GYM',
       started_at: new Date(Date.now() - 3600000).toISOString(),

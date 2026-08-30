@@ -7,21 +7,33 @@ import {
   ActivitySplit,
   ActivityType,
   GPSQuality,
+  LocationQualityGateResult,
+  MovementState,
+  PredictedMapPosition,
   RawGPSPoint,
   RoutePoint,
   TrackingMetrics,
   TrackingState,
 } from '@/types';
-import { ACTIVITY_DEFINITIONS } from '@/constants/activity';
+import { ACTIVITY_DEFINITIONS, ActivityMeta } from '@/constants/activity';
 import {
+  calculate3DDistance,
   calculateElevationProfile,
+  calculateElevationProfileStrava,
+  calculateGradeAdjustedDistance,
+  calculateGradeAdjustedPace,
+  calculateIncrementalElevation,
   calculatePace,
   calculateSpeedKmh,
   calculateSplits,
+  evaluateLocationQuality,
   haversineDistance,
   isValidCoordinate,
   postProcessActivity,
+  postProcessActivityAsync,
+  predictDeadReckoningPosition,
 } from './calculations';
+import { barometerService } from './barometer';
 
 export const GPS_BACKGROUND_TASK_NAME = 'LIFEOS_BACKGROUND_LOCATION_TASK';
 
@@ -37,7 +49,6 @@ export class GPSTrackingEngine {
   private activityType: ActivityType = 'RUN';
   private rawPoints: RawGPSPoint[] = [];
   private processedPoints: RoutePoint[] = [];
-  private recentPointsWindow: RoutePoint[] = [];
   private splits: ActivitySplit[] = [];
 
   private startTime: number = 0;
@@ -45,11 +56,32 @@ export class GPSTrackingEngine {
   private lastPauseTimestamp: number = 0;
   private lastValidPoint: RoutePoint | null = null;
   private isResuming: boolean = false;
+  private isBarometerActive: boolean = false;
 
-  // Signal Loss Tracking
+  // Signal Loss & Heartbeat
   private lastGpsFixTimestamp: number = 0;
   private gpsLostTimestamp: number = 0;
   private signalLossCheckInterval: any = null;
+
+  // Live Velocity Pipeline & Adaptive Filter (Used for movement/stop detection)
+  private smoothedSpeedMps: number = 0;
+  private displaySpeedMps: number = 0;
+  private movementState: MovementState = 'MOVING';
+  private subThresholdTicks: number = 0;
+
+  // Real-time GAP Accumulators (Running only)
+  private liveGapDistanceMeters: number = 0;
+  private currentSplitGapDistanceAccumulator: number = 0;
+
+  // Position Prediction / Dead Reckoning (For Map Display Only)
+  private lastTrustedPosition: {
+    latitude: number;
+    longitude: number;
+    speed: number;
+    heading?: number;
+    accuracy?: number;
+    timestamp: number;
+  } | null = null;
 
   // Live Splits Accumulator
   private currentSplitDistanceAccumulator: number = 0;
@@ -57,26 +89,34 @@ export class GPSTrackingEngine {
   private currentSplitMovingSeconds: number = 0;
   private currentSplitAltitudes: number[] = [];
 
+  // Live O(1) Elevation Accumulator
+  private recentAltitudes: number[] = [];
+  private lastSmoothedAltitude: number | null = null;
+  private liveElevationGain: number = 0;
+  private liveElevationLoss: number = 0;
+
   private foregroundSubscription: Location.LocationSubscription | null = null;
   private timerInterval: any = null;
   private listeners: Set<GPSListener> = new Set();
-  private smoothedSpeedMps: number = 0;
 
   private metrics: TrackingMetrics = {
     distanceMeters: 0,
     elapsedSeconds: 0,
     movingSeconds: 0,
     currentSpeedMps: 0,
+    authoritativeSpeedMps: 0,
     averageSpeedMps: 0,
     maxSpeedMps: 0,
-    currentPaceSecKm: 0,
     averagePaceSecKm: 0,
     bestPaceSecKm: undefined,
+    averageGapSecKm: undefined,
+    gapDistanceMeters: undefined,
     elevationGainMeters: 0,
     elevationLossMeters: 0,
     currentAltitudeMeters: undefined,
     currentAccuracyMeters: undefined,
     gpsQuality: 'EXCELLENT',
+    movementState: 'MOVING',
     pointsCount: 0,
     currentSplitNumber: 1,
     splits: [],
@@ -104,6 +144,55 @@ export class GPSTrackingEngine {
 
   getActivityType(): ActivityType {
     return this.activityType;
+  }
+
+  getMovementState(): MovementState {
+    return this.movementState;
+  }
+
+  /**
+   * Generates short-horizon dead reckoning position for the live map puck.
+   * STRICT ISOLATION: Display-only. Never modifies authoritative route points, distance, or elevation.
+   */
+  getLiveMapPosition(nowTimestamp: number = Date.now()): PredictedMapPosition {
+    if (!this.lastTrustedPosition) {
+      return {
+        latitude: 12.9716,
+        longitude: 77.5946,
+        isPredicted: false,
+        timestamp: nowTimestamp,
+      };
+    }
+
+    if (
+      this.state !== 'TRACKING' ||
+      this.movementState === 'STOPPED' ||
+      this.displaySpeedMps < 0.2
+    ) {
+      return {
+        latitude: this.lastTrustedPosition.latitude,
+        longitude: this.lastTrustedPosition.longitude,
+        heading: this.lastTrustedPosition.heading,
+        accuracy: this.lastTrustedPosition.accuracy,
+        isPredicted: false,
+        timestamp: this.lastTrustedPosition.timestamp,
+      };
+    }
+
+    const config = ACTIVITY_DEFINITIONS[this.activityType] || ACTIVITY_DEFINITIONS.RUN;
+    const predicted = predictDeadReckoningPosition(
+      this.lastTrustedPosition,
+      this.displaySpeedMps,
+      this.lastTrustedPosition.heading,
+      nowTimestamp,
+      config.predictionHorizonMs
+    );
+
+    return {
+      ...predicted,
+      accuracy: this.lastTrustedPosition.accuracy,
+      timestamp: nowTimestamp,
+    };
   }
 
   subscribe(listener: GPSListener) {
@@ -137,21 +226,39 @@ export class GPSTrackingEngine {
   // ==========================================
 
   async prepare(type: ActivityType = 'RUN'): Promise<boolean> {
-    if (this.state !== 'IDLE' && this.state !== 'COMPLETED' && this.state !== 'ERROR' && this.state !== 'CANCELLED') {
+    if (
+      this.state !== 'IDLE' &&
+      this.state !== 'COMPLETED' &&
+      this.state !== 'ERROR' &&
+      this.state !== 'CANCELLED'
+    ) {
       return false;
     }
 
     this.activityType = type;
     this.rawPoints = [];
     this.processedPoints = [];
-    this.recentPointsWindow = [];
     this.splits = [];
     this.startTime = 0;
     this.pausedDuration = 0;
     this.lastPauseTimestamp = 0;
     this.lastValidPoint = null;
+    this.lastTrustedPosition = null;
     this.isResuming = false;
+
     this.smoothedSpeedMps = 0;
+    this.displaySpeedMps = 0;
+    this.movementState = 'MOVING';
+    this.subThresholdTicks = 0;
+
+    this.liveGapDistanceMeters = 0;
+    this.currentSplitGapDistanceAccumulator = 0;
+
+    this.recentAltitudes = [];
+    this.lastSmoothedAltitude = null;
+    this.liveElevationGain = 0;
+    this.liveElevationLoss = 0;
+
     this.currentSplitDistanceAccumulator = 0;
     this.currentSplitStartTime = 0;
     this.currentSplitMovingSeconds = 0;
@@ -162,16 +269,19 @@ export class GPSTrackingEngine {
       elapsedSeconds: 0,
       movingSeconds: 0,
       currentSpeedMps: 0,
+      authoritativeSpeedMps: 0,
       averageSpeedMps: 0,
       maxSpeedMps: 0,
-      currentPaceSecKm: 0,
       averagePaceSecKm: 0,
       bestPaceSecKm: undefined,
+      averageGapSecKm: undefined,
+      gapDistanceMeters: undefined,
       elevationGainMeters: 0,
       elevationLossMeters: 0,
       currentAltitudeMeters: undefined,
       currentAccuracyMeters: undefined,
       gpsQuality: 'EXCELLENT',
+      movementState: 'MOVING',
       pointsCount: 0,
       currentSplitNumber: 1,
       splits: [],
@@ -180,7 +290,6 @@ export class GPSTrackingEngine {
     this.state = 'PREPARING';
     this.notifyState();
 
-    // Check GPS Signal Availability & Permissions
     if (Platform.OS !== 'web') {
       try {
         const hasServices = await Location.hasServicesEnabledAsync();
@@ -221,6 +330,23 @@ export class GPSTrackingEngine {
     this.state = 'TRACKING';
     this.notifyState();
 
+    // Start hardware barometric sensor if available
+    try {
+      const isBaro = await barometerService.isAvailableAsync();
+      if (isBaro) {
+        await barometerService.start(0);
+        this.isBarometerActive = true;
+        this.metrics.elevationSource = 'BAROMETER';
+        this.metrics.isElevationCorrected = true;
+      } else {
+        this.isBarometerActive = false;
+        this.metrics.elevationSource = 'GPS_RAW';
+        this.metrics.isElevationCorrected = false;
+      }
+    } catch {
+      this.isBarometerActive = false;
+    }
+
     this.startTimer();
     this.startSignalLossChecker();
     await this.startLocationTracking();
@@ -228,12 +354,17 @@ export class GPSTrackingEngine {
   }
 
   async pause(): Promise<boolean> {
-    if (this.state !== 'TRACKING' && this.state !== 'GPS_LOST') return false;
+    if (this.state !== 'TRACKING' && this.state !== 'GPS_LOST' && this.state !== 'RECOVERING') {
+      return false;
+    }
 
     this.state = 'PAUSED';
     this.lastPauseTimestamp = Date.now();
     this.smoothedSpeedMps = 0;
+    this.displaySpeedMps = 0;
+    this.movementState = 'STOPPED';
     this.metrics.currentSpeedMps = 0;
+    this.metrics.movementState = 'STOPPED';
     this.notifyMetrics();
     this.notifyState();
     return true;
@@ -247,7 +378,9 @@ export class GPSTrackingEngine {
       this.lastPauseTimestamp = 0;
     }
 
-    this.isResuming = true; // Signals that next location must NOT compute displacement jump from pre-pause point
+    this.isResuming = true;
+    this.movementState = 'MOVING';
+    this.metrics.movementState = 'MOVING';
     this.state = 'TRACKING';
     this.notifyState();
     return true;
@@ -256,6 +389,8 @@ export class GPSTrackingEngine {
   async cancel(): Promise<void> {
     this.stopTimer();
     this.stopSignalLossChecker();
+    barometerService.stop();
+    this.isBarometerActive = false;
     await this.stopLocationTracking();
     this.state = 'CANCELLED';
     this.notifyState();
@@ -272,20 +407,21 @@ export class GPSTrackingEngine {
 
     this.stopTimer();
     this.stopSignalLossChecker();
+    barometerService.stop();
     await this.stopLocationTracking();
 
     this.state = 'PROCESSING';
     this.notifyState();
 
-    // Run authoritative post-processing
     const startedAt = new Date(this.startTime || Date.now()).toISOString();
     const endedAt = new Date().toISOString();
 
-    const postResults = postProcessActivity({
+    const postResults = await postProcessActivityAsync({
       rawPoints: this.rawPoints,
       type: this.activityType,
       startedAt,
       endedAt,
+      isBarometric: this.isBarometerActive,
     });
 
     this.metrics.distanceMeters = postResults.authoritativeDistanceMeters;
@@ -297,6 +433,8 @@ export class GPSTrackingEngine {
     this.metrics.bestPaceSecKm = postResults.bestPaceSecKm;
     this.metrics.elevationGainMeters = postResults.elevationGainMeters;
     this.metrics.elevationLossMeters = postResults.elevationLossMeters;
+    this.metrics.elevationSource = postResults.elevationSource;
+    this.metrics.isElevationCorrected = postResults.isElevationCorrected;
     this.metrics.splits = postResults.splits;
     this.metrics.gpsQuality = postResults.gpsQuality;
 
@@ -317,6 +455,8 @@ export class GPSTrackingEngine {
       moving_time: postResults.movingSeconds,
       elevation_gain: postResults.elevationGainMeters,
       elevation_loss: postResults.elevationLossMeters,
+      elevation_source: postResults.elevationSource,
+      elevation_corrected: postResults.isElevationCorrected,
       average_speed: postResults.averageSpeedMps,
       max_speed: postResults.maxSpeedMps,
       average_pace: postResults.averagePaceSecKm,
@@ -338,53 +478,89 @@ export class GPSTrackingEngine {
   async reset(): Promise<void> {
     this.stopTimer();
     this.stopSignalLossChecker();
+    barometerService.stop();
+    this.isBarometerActive = false;
     await this.stopLocationTracking();
     this.state = 'IDLE';
     this.rawPoints = [];
     this.processedPoints = [];
-    this.recentPointsWindow = [];
+    this.recentAltitudes = [];
+    this.lastSmoothedAltitude = null;
+    this.liveElevationGain = 0;
+    this.liveElevationLoss = 0;
     this.splits = [];
     this.smoothedSpeedMps = 0;
+    this.displaySpeedMps = 0;
+    this.movementState = 'MOVING';
+    this.subThresholdTicks = 0;
+    this.lastValidPoint = null;
+    this.lastTrustedPosition = null;
     this.notifyState();
     await AsyncStorage.removeItem('@lifeos_active_gps_session');
   }
 
   // ==========================================
-  // 2. REAL-TIME POINT PROCESSING PIPELINE
+  // 2. REAL-TIME PIPELINE & QUALITY GATE
   // ==========================================
 
   handleNewLocation(location: Location.LocationObject) {
-    if (this.state !== 'TRACKING' && this.state !== 'GPS_LOST' && this.state !== 'RECOVERING') {
+    if (
+      this.state !== 'TRACKING' &&
+      this.state !== 'GPS_LOST' &&
+      this.state !== 'RECOVERING'
+    ) {
       return;
     }
 
     const { latitude, longitude, altitude, accuracy, speed, heading } = location.coords;
+    const speedAccuracy = (location.coords as any).speedAccuracy ?? null;
     const timestamp = location.timestamp;
 
-    // 1. Store in RAW Points
     const rawPoint: RawGPSPoint = {
       latitude,
       longitude,
       altitude: altitude ?? undefined,
       accuracy: accuracy ?? undefined,
       speed: speed !== null && speed >= 0 ? speed : undefined,
+      speedAccuracy: speedAccuracy ?? undefined,
       heading: heading ?? undefined,
       timestamp,
     };
     this.rawPoints.push(rawPoint);
 
-    // 2. Validate Coordinate Sanity
-    if (!isValidCoordinate(latitude, longitude)) {
-      return;
-    }
-
     const config = ACTIVITY_DEFINITIONS[this.activityType] || ACTIVITY_DEFINITIONS.RUN;
 
-    // 3. Accuracy Filter (Activity Aware)
-    if (accuracy !== null && accuracy !== undefined && accuracy > config.accuracyThresholdMeters) {
-      this.metrics.currentAccuracyMeters = accuracy;
-      this.metrics.gpsQuality = accuracy > 40 ? 'POOR' : 'FAIR';
-      this.notifyMetrics();
+    // Multi-Criteria Location Quality Gate
+    const gateResult = evaluateLocationQuality({
+      rawPoint,
+      lastValidPoint: this.lastValidPoint,
+      config,
+      systemTime: Date.now(),
+    });
+
+    if (!gateResult.accepted) {
+      if (accuracy !== undefined && accuracy !== null) {
+        this.metrics.currentAccuracyMeters = accuracy;
+        this.metrics.gpsQuality =
+          accuracy > 40 ? 'POOR' : accuracy > config.accuracyThresholdMeters ? 'FAIR' : 'DEGRADED';
+        this.notifyMetrics();
+      }
+
+      // Handle stationary duplicate coordinate fix with zero speed
+      if (gateResult.reason === 'Duplicate coordinate') {
+        const rawSpeed = speed !== null && speed !== undefined && speed >= 0 ? speed : 0;
+        if (rawSpeed === 0 || rawSpeed <= config.stopSpeedMps) {
+          this.subThresholdTicks++;
+          this.smoothedSpeedMps = 0;
+          this.displaySpeedMps = 0;
+          this.metrics.currentSpeedMps = 0;
+          if (this.subThresholdTicks >= config.stopConfirmationTicks || rawSpeed === 0) {
+            this.movementState = 'STOPPED';
+            this.metrics.movementState = 'STOPPED';
+          }
+          this.notifyMetrics();
+        }
+      }
       return;
     }
 
@@ -394,68 +570,100 @@ export class GPSTrackingEngine {
       this.notifyState();
     }
     this.lastGpsFixTimestamp = timestamp;
-    this.metrics.gpsQuality = accuracy !== null && accuracy <= 12 ? 'EXCELLENT' : 'GOOD';
-
-    // 4. Plausible Speed Check
-    if (speed !== null && speed !== undefined && speed > config.maxValidSpeedMps) {
-      return;
+    this.metrics.gpsQuality = gateResult.quality;
+    // If hardware barometer is active, use high-precision barometric calibrated altitude
+    let effectiveAltitude = altitude;
+    if (this.isBarometerActive) {
+      const baroReading = barometerService.getLastReading();
+      if (baroReading && typeof baroReading.calibratedAltitudeMeters === 'number') {
+        effectiveAltitude = baroReading.calibratedAltitudeMeters;
+      }
     }
 
     const processedPoint: RoutePoint = {
       latitude,
       longitude,
-      altitude: altitude ?? undefined,
+      altitude: effectiveAltitude ?? undefined,
       accuracy: accuracy ?? undefined,
       speed: speed !== null && speed >= 0 ? speed : undefined,
+      heading: heading ?? undefined,
       timestamp,
     };
 
+    let stepDistance = 0;
+    let timeDeltaSec = 1;
+    let computedSpeed = 0;
+
     if (this.lastValidPoint) {
-      // 5. Duplicate Check
-      if (this.lastValidPoint.latitude === latitude && this.lastValidPoint.longitude === longitude) {
-        return;
-      }
-
-      // 6. Timestamp Ordering Check
-      if (timestamp <= this.lastValidPoint.timestamp) {
-        return;
-      }
-
-      // 7. Resume Re-anchoring (Prevents huge displacement leaps after pausing)
+      // Resume Re-anchoring (Prevents displacement leap after pause)
       if (this.isResuming) {
         this.isResuming = false;
         this.lastValidPoint = processedPoint;
+        this.lastTrustedPosition = {
+          latitude,
+          longitude,
+          speed: speed !== null && speed >= 0 ? speed : 0,
+          heading: heading ?? undefined,
+          accuracy: accuracy ?? undefined,
+          timestamp,
+        };
         this.processedPoints.push(processedPoint);
         this.notifyPoint(processedPoint);
         return;
       }
 
-      // 8. Jump Anomaly Rejection
-      const stepDistance = haversineDistance(
+      const { horizontalMeters, distance3DMeters, elevationDelta } = calculate3DDistance(
         this.lastValidPoint.latitude,
         this.lastValidPoint.longitude,
+        this.lastValidPoint.altitude,
         latitude,
-        longitude
+        longitude,
+        effectiveAltitude,
+        config.enableSlopeCorrection
       );
+      timeDeltaSec = Math.max(0.2, (timestamp - this.lastValidPoint.timestamp) / 1000);
+      computedSpeed = horizontalMeters / timeDeltaSec;
 
-      if (stepDistance > config.maxValidJumpMeters) {
-        // Discard teleport glitch
-        return;
+      // Determine instant velocity source: prefer native reported Doppler speed when quality is good
+      const hasNativeSpeed =
+        speed !== null && speed !== undefined && speed >= 0 && gateResult.quality !== 'DEGRADED';
+      const instantVelocity = hasNativeSpeed ? (speed as number) : computedSpeed;
+
+      // Hysteresis Stop Detection
+      const isSubThreshold =
+        instantVelocity < config.stopSpeedMps && horizontalMeters < config.minMovementDeltaMeters;
+
+      if (isSubThreshold) {
+        this.subThresholdTicks++;
+        if (this.subThresholdTicks >= config.stopConfirmationTicks) {
+          this.movementState = 'STOPPED';
+        } else {
+          this.movementState = 'POSSIBLE_STOP';
+        }
+      } else if (
+        instantVelocity >= config.resumeSpeedMps ||
+        horizontalMeters >= config.minMovementDeltaMeters
+      ) {
+        this.subThresholdTicks = 0;
+        this.movementState = 'MOVING';
       }
 
-      const timeDeltaSec = Math.max(0.5, (timestamp - this.lastValidPoint.timestamp) / 1000);
-      const computedSpeed = stepDistance / timeDeltaSec;
+      // Stationary Drift Rejection
+      const isStationaryDrift =
+        horizontalMeters < config.minMovementDeltaMeters &&
+        computedSpeed < config.minValidSpeedMps &&
+        instantVelocity < config.minValidSpeedMps;
 
-      if (computedSpeed > config.maxValidSpeedMps) {
-        return;
-      }
+      // O(1) Incremental Distance Accumulation (Accepted genuine moving points only)
+      if (this.movementState !== 'STOPPED' && !isStationaryDrift) {
+        this.metrics.distanceMeters += distance3DMeters;
+        this.currentSplitDistanceAccumulator += distance3DMeters;
 
-      // 9. Stationary Drift Rejection
-      const isStationary = stepDistance < config.minMovementDeltaMeters && computedSpeed < config.minValidSpeedMps;
-
-      if (!isStationary) {
-        this.metrics.distanceMeters += stepDistance;
-        this.currentSplitDistanceAccumulator += stepDistance;
+        if (config.enableGap) {
+          const segGapDist = calculateGradeAdjustedDistance(horizontalMeters, elevationDelta);
+          this.liveGapDistanceMeters += segGapDist;
+          this.currentSplitGapDistanceAccumulator += segGapDist;
+        }
 
         if (computedSpeed >= config.minValidSpeedMps) {
           this.metrics.movingSeconds += timeDeltaSec;
@@ -471,80 +679,122 @@ export class GPSTrackingEngine {
     this.lastValidPoint = processedPoint;
     this.processedPoints.push(processedPoint);
 
+    // Save trusted position for live map dead reckoning interpolation
+    const trustedSpeed =
+      this.movementState === 'STOPPED'
+        ? 0
+        : speed !== null && speed >= 0
+        ? speed
+        : computedSpeed;
+    this.lastTrustedPosition = {
+      latitude,
+      longitude,
+      speed: trustedSpeed,
+      heading: heading ?? undefined,
+      accuracy: accuracy ?? undefined,
+      timestamp,
+    };
+
     if (this.state === 'RECOVERING') {
       this.state = 'TRACKING';
       this.notifyState();
     }
 
-    // 10. Live Rolling Window for Smooth Pace
-    this.recentPointsWindow.push(processedPoint);
-    if (this.recentPointsWindow.length > 6) {
-      this.recentPointsWindow.shift();
-    }
+    // Adaptive Speed Filter (Used for movement/stop detection)
+    const targetInstantSpeed =
+      speed !== null && speed !== undefined && speed >= 0 ? speed : computedSpeed;
 
-    // Exponential Moving Average for Instantaneous Speed
-    const instantSpeed = speed !== null && speed !== undefined && speed >= 0 ? speed : 0;
-    if (this.smoothedSpeedMps === 0) {
-      this.smoothedSpeedMps = instantSpeed;
+    if (this.movementState === 'STOPPED' || targetInstantSpeed < config.stopSpeedMps) {
+      // Stopped state -> immediate zero response
+      this.smoothedSpeedMps = 0;
+      this.displaySpeedMps = 0;
+    } else if (this.smoothedSpeedMps === 0) {
+      this.smoothedSpeedMps = targetInstantSpeed;
+      this.displaySpeedMps = targetInstantSpeed;
     } else {
-      const alpha = 0.25;
-      this.smoothedSpeedMps = alpha * instantSpeed + (1 - alpha) * this.smoothedSpeedMps;
+      const alpha =
+        gateResult.quality === 'EXCELLENT'
+          ? config.adaptiveAlpha.excellent
+          : gateResult.quality === 'GOOD'
+          ? config.adaptiveAlpha.good
+          : config.adaptiveAlpha.degraded;
+
+      this.smoothedSpeedMps = alpha * targetInstantSpeed + (1 - alpha) * this.smoothedSpeedMps;
+      this.displaySpeedMps = Math.max(0, +this.smoothedSpeedMps.toFixed(2));
     }
 
     this.metrics.pointsCount = this.processedPoints.length;
-    this.metrics.currentAltitudeMeters = altitude ?? undefined;
-    this.metrics.currentAccuracyMeters = accuracy ?? undefined;
+    this.metrics.currentAltitudeMeters = effectiveAltitude ?? undefined;
     this.metrics.currentSpeedMps = Math.max(0, +this.smoothedSpeedMps.toFixed(2));
+    this.metrics.movementState = this.movementState;
 
-    // 11. Elevation Gain & Loss
-    if (altitude !== undefined && altitude !== null) {
-      this.currentSplitAltitudes.push(altitude);
-    }
-    const altitudes = this.processedPoints
-      .map((p) => p.altitude)
-      .filter((a): a is number => typeof a === 'number');
-    const elev = calculateElevationProfile(altitudes);
-    this.metrics.elevationGainMeters = elev.gainMeters;
-    this.metrics.elevationLossMeters = elev.lossMeters;
-
-    // 12. Pace & Average Speed
-    if (this.metrics.distanceMeters > 10) {
-      const activeDuration = this.metrics.movingSeconds || this.metrics.elapsedSeconds;
-      this.metrics.averagePaceSecKm = calculatePace(this.metrics.distanceMeters, activeDuration);
-      this.metrics.averageSpeedMps = +(this.metrics.distanceMeters / Math.max(1, activeDuration)).toFixed(2);
-
-      if (this.recentPointsWindow.length >= 3) {
-        const firstPt = this.recentPointsWindow[0];
-        const lastPt = this.recentPointsWindow[this.recentPointsWindow.length - 1];
-        const winDist = haversineDistance(firstPt.latitude, firstPt.longitude, lastPt.latitude, lastPt.longitude);
-        const winTime = (lastPt.timestamp - firstPt.timestamp) / 1000;
-
-        if (winDist > 5 && winTime > 1) {
-          this.metrics.currentPaceSecKm = calculatePace(winDist, winTime);
-        } else if (this.smoothedSpeedMps > 0.5) {
-          this.metrics.currentPaceSecKm = Math.round(1000 / this.smoothedSpeedMps);
-        } else {
-          this.metrics.currentPaceSecKm = this.metrics.averagePaceSecKm;
-        }
-      } else if (this.smoothedSpeedMps > 0.5) {
-        this.metrics.currentPaceSecKm = Math.round(1000 / this.smoothedSpeedMps);
-      } else {
-        this.metrics.currentPaceSecKm = this.metrics.averagePaceSecKm;
+    // O(1) Real-Time Incremental Elevation Accumulator
+    if (effectiveAltitude !== undefined && effectiveAltitude !== null) {
+      this.currentSplitAltitudes.push(effectiveAltitude);
+      this.recentAltitudes.push(effectiveAltitude);
+      if (this.recentAltitudes.length > 3) {
+        this.recentAltitudes.shift();
       }
+      const { currentSmoothed, gainDelta, lossDelta } = calculateIncrementalElevation(
+        this.lastSmoothedAltitude,
+        this.recentAltitudes
+      );
+      this.lastSmoothedAltitude = currentSmoothed;
+      this.liveElevationGain += gainDelta;
+      this.liveElevationLoss += lossDelta;
+      this.metrics.elevationGainMeters = Math.round(this.liveElevationGain);
+      this.metrics.elevationLossMeters = Math.round(this.liveElevationLoss);
     }
 
-    // 13. Live Splits Check
+    // Average Pace & Average Speed from cumulative valid activity data
+    const activeMovingTime = this.metrics.movingSeconds;
+    // Require at least 30m of verified cumulative movement to prevent initial cold-start GPS noise
+    if (this.metrics.distanceMeters >= 30 && activeMovingTime > 0) {
+      this.metrics.averagePaceSecKm = calculatePace(this.metrics.distanceMeters, activeMovingTime, 30);
+      this.metrics.averageSpeedMps = +(this.metrics.distanceMeters / activeMovingTime).toFixed(2);
+    } else {
+      this.metrics.averagePaceSecKm = 0; // Formats as '--:--'
+      this.metrics.averageSpeedMps = 0;
+    }
+    this.metrics.authoritativeSpeedMps = this.metrics.averageSpeedMps;
+
+    if (config.enableGap && this.liveGapDistanceMeters >= 30 && activeMovingTime > 0) {
+      this.metrics.gapDistanceMeters = Math.round(this.liveGapDistanceMeters);
+      this.metrics.averageGapSecKm = calculateGradeAdjustedPace(
+        this.liveGapDistanceMeters,
+        activeMovingTime
+      );
+    }
+
+    // Live Splits Check
     if (this.currentSplitDistanceAccumulator >= config.splitDistanceMeters) {
       const splitDuration = Math.max(1, (timestamp - this.currentSplitStartTime) / 1000);
-      const splitElev = calculateElevationProfile(this.currentSplitAltitudes);
+      const splitElev = calculateElevationProfileStrava(this.currentSplitAltitudes, {
+        isBarometricOrDem: true,
+      });
+
+      const gapSecKm =
+        config.enableGap && this.currentSplitGapDistanceAccumulator > 0
+          ? calculateGradeAdjustedPace(
+              this.currentSplitGapDistanceAccumulator,
+              this.currentSplitMovingSeconds || splitDuration
+            )
+          : undefined;
 
       const newSplit: ActivitySplit = {
         splitNumber: this.metrics.currentSplitNumber,
         distanceMeters: Math.round(this.currentSplitDistanceAccumulator),
         durationSeconds: Math.round(splitDuration),
         movingSeconds: Math.round(this.currentSplitMovingSeconds || splitDuration),
-        paceSecKm: calculatePace(this.currentSplitDistanceAccumulator, this.currentSplitMovingSeconds || splitDuration),
-        speedKmh: calculateSpeedKmh(this.currentSplitDistanceAccumulator, this.currentSplitMovingSeconds || splitDuration),
+        paceSecKm: calculatePace(
+          this.currentSplitDistanceAccumulator,
+          this.currentSplitMovingSeconds || splitDuration
+        ),
+        gapSecKm,
+        speedKmh: calculateSpeedKmh(
+          this.currentSplitDistanceAccumulator,
+          this.currentSplitMovingSeconds || splitDuration
+        ),
         elevationGainMeters: splitElev.gainMeters,
         elevationLossMeters: splitElev.lossMeters,
       };
@@ -557,6 +807,7 @@ export class GPSTrackingEngine {
 
       // Reset for next split
       this.currentSplitDistanceAccumulator = 0;
+      this.currentSplitGapDistanceAccumulator = 0;
       this.currentSplitStartTime = timestamp;
       this.currentSplitMovingSeconds = 0;
       this.currentSplitAltitudes = [altitude || 0];
@@ -573,7 +824,11 @@ export class GPSTrackingEngine {
   private startTimer() {
     this.stopTimer();
     this.timerInterval = setInterval(() => {
-      if (this.state === 'TRACKING' || this.state === 'GPS_LOST' || this.state === 'RECOVERING') {
+      if (
+        this.state === 'TRACKING' ||
+        this.state === 'GPS_LOST' ||
+        this.state === 'RECOVERING'
+      ) {
         const totalDurationMs = Date.now() - this.startTime - this.pausedDuration;
         this.metrics.elapsedSeconds = Math.max(0, Math.floor(totalDurationMs / 1000));
         this.notifyMetrics();
@@ -594,7 +849,6 @@ export class GPSTrackingEngine {
       if (this.state === 'TRACKING') {
         const timeSinceLastFix = Date.now() - this.lastGpsFixTimestamp;
         if (timeSinceLastFix > 8000) {
-          // No GPS fix for > 8 seconds -> Mark as GPS_LOST
           this.state = 'GPS_LOST';
           this.gpsLostTimestamp = Date.now();
           this.metrics.gpsQuality = 'LOST';
@@ -712,3 +966,4 @@ if (Platform.OS !== 'web') {
     }
   });
 }
+

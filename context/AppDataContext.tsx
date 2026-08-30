@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import {
   activitiesRepository,
@@ -96,7 +96,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [goals, setGoals] = useState<Goal[]>([]);
   const [dailyLog, setDailyLog] = useState<DailyLog | null>(null);
 
-  const userId = user?.id || 'demo-user-naman';
+  const userId = user?.id || '';
   const enabledPillars = user?.enabled_pillars || {
     move: true,
     surf: true,
@@ -105,8 +105,21 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     live: true,
   };
 
-  const refreshData = async () => {
-    if (!userId) return;
+  const refreshData = useCallback(async () => {
+    if (!userId) {
+      setHabits([]);
+      setHabitCompletions([]);
+      setPriorities([]);
+      setActivities([]);
+      setWorkouts([]);
+      setSurfSessions([]);
+      setSubjects([]);
+      setStudySessions([]);
+      setProjects([]);
+      setGoals([]);
+      setDailyLog(null);
+      return;
+    }
     try {
       const [
         loadedHabits,
@@ -148,11 +161,11 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     } catch (err) {
       console.warn('Error refreshing app data:', err);
     }
-  };
+  }, [userId, todayDate]);
 
   useEffect(() => {
     refreshData();
-  }, [userId, todayDate]);
+  }, [refreshData]);
 
   // Dynamic Honest Life Score (Aware of disabled pillars & zero fabrication)
   const {

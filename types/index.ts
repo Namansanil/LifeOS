@@ -14,14 +14,33 @@ export type ActivitySource = 'MANUAL' | 'GPS' | 'HEALTH' | 'IMPORTED';
 
 export type ActivityVisibility = 'PRIVATE' | 'FRIENDS' | 'PUBLIC';
 
-export type GPSQuality = 'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR' | 'LOST';
+export type GPSQuality = 'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR' | 'DEGRADED' | 'INVALID' | 'LOST';
+
+export type MovementState = 'MOVING' | 'POSSIBLE_STOP' | 'STOPPED';
+
+export interface LocationQualityGateResult {
+  accepted: boolean;
+  quality: GPSQuality;
+  reason?: string;
+}
+
+export interface PredictedMapPosition {
+  latitude: number;
+  longitude: number;
+  heading?: number;
+  accuracy?: number;
+  isPredicted: boolean;
+  timestamp: number;
+}
 
 export interface UserProfile {
   id: string;
   email: string;
   full_name: string;
   avatar_url?: string;
+  email_verified?: boolean;
   created_at: string;
+  updated_at?: string;
   enabled_pillars: {
     move: boolean;
     surf: boolean;
@@ -45,6 +64,7 @@ export interface RawGPSPoint {
   altitude?: number | null;
   accuracy?: number | null;
   speed?: number | null;
+  speedAccuracy?: number | null;
   heading?: number | null;
   timestamp: number;
 }
@@ -58,6 +78,7 @@ export interface RoutePoint {
   altitude?: number | null;
   accuracy?: number | null;
   speed?: number | null;
+  heading?: number | null;
 }
 
 export interface ActivitySplit {
@@ -66,6 +87,7 @@ export interface ActivitySplit {
   durationSeconds: number;
   movingSeconds: number;
   paceSecKm: number;
+  gapSecKm?: number; // Grade Adjusted Pace (sec/km) for running
   speedKmh: number;
   elevationGainMeters: number;
   elevationLossMeters: number;
@@ -88,6 +110,10 @@ export interface Activity {
   max_speed?: number; // in m/s
   average_pace: number; // in sec/km
   best_pace?: number; // in sec/km
+  average_gap?: number; // in sec/km (Grade Adjusted Pace for running)
+  gap_distance?: number; // in meters
+  elevation_source?: 'BAROMETER' | 'DEM' | 'GPS_RAW';
+  elevation_corrected?: boolean;
   calories?: number;
   source: ActivitySource;
   visibility: ActivityVisibility;
@@ -342,16 +368,21 @@ export interface TrackingMetrics {
   elapsedSeconds: number;
   movingSeconds: number;
   currentSpeedMps: number;
+  authoritativeSpeedMps?: number;
   averageSpeedMps: number;
   maxSpeedMps: number;
-  currentPaceSecKm: number;
   averagePaceSecKm: number;
   bestPaceSecKm?: number;
+  averageGapSecKm?: number;
+  gapDistanceMeters?: number;
   elevationGainMeters: number;
   elevationLossMeters: number;
+  elevationSource?: 'BAROMETER' | 'DEM' | 'GPS_RAW';
+  isElevationCorrected?: boolean;
   currentAltitudeMeters?: number;
   currentAccuracyMeters?: number;
   gpsQuality: GPSQuality;
+  movementState?: MovementState;
   pointsCount: number;
   currentSplitNumber: number;
   splits: ActivitySplit[];

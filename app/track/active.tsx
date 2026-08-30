@@ -13,7 +13,7 @@ import { Typography } from '@/constants/typography';
 import { Spacing, BorderRadius, Shadows } from '@/constants/spacing';
 import { formatDuration, formatPace } from '@/services/calculations';
 import { ACTIVITY_DEFINITIONS } from '@/constants/activity';
-import { Pause, Play, Square, Navigation, MapPin } from 'lucide-react-native';
+import { Pause, Play, Square, Navigation, MapPin, X } from 'lucide-react-native';
 import { haptics } from '@/services/haptics';
 import { LiveTrackingMap } from '@/components/maps/LiveTrackingMap';
 
@@ -28,6 +28,7 @@ export default function ActiveTrackingScreen() {
     start,
     pause,
     resume,
+    cancel,
     finish,
   } = useTracking();
 
@@ -51,8 +52,7 @@ export default function ActiveTrackingScreen() {
   const timeStr = formatDuration(metrics.elapsedSeconds);
   const movingTimeStr = formatDuration(metrics.movingSeconds);
   const showMovingTime = metrics.elapsedSeconds > 30 && metrics.movingSeconds < metrics.elapsedSeconds;
-  const paceStr = formatPace(metrics.currentPaceSecKm);
-  const speedKmh = (metrics.currentSpeedMps * 3.6).toFixed(1);
+  const avgPaceStr = formatPace(metrics.averagePaceSecKm);
   const avgSpeedKmh = (metrics.averageSpeedMps * 3.6).toFixed(1);
 
   const handleFinish = async () => {
@@ -60,16 +60,35 @@ export default function ActiveTrackingScreen() {
     router.replace('/track/summary');
   };
 
+  const handleCancel = async () => {
+    await haptics.warning();
+    await cancel();
+    router.replace('/(tabs)');
+  };
+
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: '#121418' }]} edges={['top', 'bottom']}>
       {/* Top HUD Header */}
       <View style={styles.topHud}>
+        <Pressable
+          accessibilityLabel="Cancel and exit tracking"
+          onPress={handleCancel}
+          style={({ pressed }) => [
+            styles.hudCloseBtn,
+            { opacity: pressed ? 0.7 : 1 },
+          ]}
+        >
+          <X size={20} color="#94A3B8" />
+        </Pressable>
+
         <View style={styles.sportIndicator}>
           <View style={[styles.activeDot, { backgroundColor: state === 'TRACKING' ? '#4ADE80' : '#FB923C' }]} />
           <Text style={[Typography.eyebrow, { color: '#FFFFFF' }]}>
             {meta.label.toUpperCase()} · {state}
           </Text>
         </View>
+
+        <View style={{ width: 36 }} />
       </View>
 
       {/* Primary Dominant Distance Metric */}
@@ -100,19 +119,19 @@ export default function ActiveTrackingScreen() {
 
         <View style={styles.metricItem}>
           <Text style={[Typography.eyebrowSmall, { color: '#94A3B8' }]}>
-            {isSpeedActivity ? 'CURRENT SPEED' : 'CURRENT PACE'}
+            {isSpeedActivity ? 'AVERAGE SPEED' : 'AVERAGE PACE'}
           </Text>
           {isSpeedActivity ? (
             <>
               <Text style={[Typography.displayMetricSmall, { color: '#FFFFFF', marginTop: 4 }]}>
-                {speedKmh}
+                {avgSpeedKmh}
               </Text>
               <Text style={[Typography.caption, { color: '#64748B' }]}>km/h</Text>
             </>
           ) : (
             <>
               <Text style={[Typography.displayMetricSmall, { color: '#FFFFFF', marginTop: 4 }]}>
-                {paceStr.replace(' /km', '')}
+                {avgPaceStr.replace(' /km', '')}
               </Text>
               <Text style={[Typography.caption, { color: '#64748B' }]}>/km</Text>
             </>
@@ -124,11 +143,11 @@ export default function ActiveTrackingScreen() {
       <View style={styles.metricsGrid}>
         <View style={styles.metricItem}>
           <Text style={[Typography.eyebrowSmall, { color: '#94A3B8' }]}>
-            {isSpeedActivity ? 'AVG SPEED' : 'SPEED'}
+            {isSpeedActivity ? 'ELAPSED TIME' : 'AVG SPEED'}
           </Text>
           <Text style={[Typography.headingLarge, { color: '#FFFFFF', marginTop: 4 }]}>
-            {isSpeedActivity ? avgSpeedKmh : speedKmh}{' '}
-            <Text style={[Typography.caption, { color: '#64748B' }]}>km/h</Text>
+            {isSpeedActivity ? timeStr : `${avgSpeedKmh} `}
+            {!isSpeedActivity && <Text style={[Typography.caption, { color: '#64748B' }]}>km/h</Text>}
           </Text>
         </View>
 
@@ -202,7 +221,17 @@ const styles = StyleSheet.create({
   topHud: {
     paddingHorizontal: Spacing.screenHorizontal,
     paddingVertical: Spacing.md,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  hudCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: BorderRadius.full,
+    backgroundColor: '#1E232B',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   sportIndicator: {
     flexDirection: 'row',

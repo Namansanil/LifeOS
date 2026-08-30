@@ -1,0 +1,25 @@
+# Dependencies & caches
+node_modules/
+.expo/
+dist/
+web-build/
+.next/
+
+# Backend & Server Docker Directories
+opentopodata/
+supabase/
+docker-compose.yml
+
+# Test suites & Agent cache
+__tests__/
+.agents/
+coverage/
+
+# OS & Secrets
+.DS_Store
+.env*
+*.pem
+*.jks
+*.p8
+*.p12
+*.mobileprovision
